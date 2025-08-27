@@ -452,7 +452,7 @@ class SamplingParams(
             if model_eos_token_id is not None:
                 # We don't need to include the primary eos_token_id in
                 # stop_token_ids since it's handled separately for stopping
-                # purposes.
+                # purposes. test
                 eos_ids.discard(model_eos_token_id)
             if eos_ids:
                 self._all_stop_token_ids.update(eos_ids)
