@@ -90,6 +90,7 @@ def get_processor(
         revision = "main"
 
     try:
+        print("lxy here")
         if isinstance(processor_cls, tuple) or processor_cls == ProcessorMixin:
             processor = AutoProcessor.from_pretrained(
                 processor_name,
