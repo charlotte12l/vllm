@@ -117,7 +117,7 @@ class LlamaMLP(nn.Module):
 class LlamaAttention(nn.Module):
     def __init__(
         self,
-        config: LlamaConfig,
+        config: ModelArchitectureTextConfig,
         hidden_size: int,
         num_heads: int,
         num_kv_heads: int,
@@ -265,7 +265,7 @@ class LlamaDecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        config = config or vllm_config.model_config.hf_config
+        config = config or vllm_config.model_config.model_arch_config.text_config
         cache_config = vllm_config.cache_config
         quant_config = self.get_quant_config(vllm_config)
 
@@ -363,7 +363,7 @@ class LlamaModel(nn.Module):
     ):
         super().__init__()
 
-        config = vllm_config.model_config.hf_config
+        config = vllm_config.model_config.model_arch_config.text_config
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
 
@@ -555,7 +555,7 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
         layer_type: type[nn.Module] = LlamaDecoderLayer,
     ):
         super().__init__()
-        config = vllm_config.model_config.hf_config
+        config = vllm_config.model_config.model_arch_config.text_config
         quant_config = vllm_config.quant_config
         lora_config = vllm_config.lora_config
         self.config = config
