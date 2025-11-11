@@ -36,6 +36,7 @@ from vllm.attention import Attention, AttentionType
 from vllm.attention.layers.encoder_only_attention import EncoderOnlyAttention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig
+from vllm.config.model_arch import ModelArchitectureTextConfig
 from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.layernorm import RMSNorm
@@ -160,14 +161,6 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        llama_4_scaling_config = getattr(config, "llama_4_scaling", None)
-        self.do_llama_4_scaling = llama_4_scaling_config is not None
-        if self.do_llama_4_scaling:
-            self.llama_4_scaling_original_max_position_embeddings = (
-                llama_4_scaling_config["original_max_position_embeddings"]
-            )
-            self.llama_4_scaling_beta = llama_4_scaling_config["beta"]
-
         self.qkv_proj = QKVParallelLinear(
             hidden_size=hidden_size,
             head_size=self.head_dim,
@@ -229,17 +222,6 @@ class LlamaAttention(nn.Module):
             prefix=f"{prefix}.attn",
         )
 
-    def _get_llama_4_attn_scale(self, positions: torch.Tensor) -> torch.Tensor:
-        # Llama4 scaling
-        scaling = 1 + self.llama_4_scaling_beta * torch.log(
-            1
-            + torch.floor(
-                positions / self.llama_4_scaling_original_max_position_embeddings
-            )
-        )
-        # Broadcast over head_dim
-        return scaling.unsqueeze(-1)
-
     def forward(
         self,
         positions: torch.Tensor,
@@ -248,9 +230,6 @@ class LlamaAttention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
-        if self.do_llama_4_scaling:
-            attn_scale = self._get_llama_4_attn_scale(positions)
-            q = (q * attn_scale).to(q.dtype)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
         return output
@@ -728,3 +707,12 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
                 name = name.replace(item, mapping[item])
 
         return name, loaded_weight
+
+    @classmethod
+    def get_per_layer_attention_cls(cls, text_config: ModelArchitectureTextConfig):
+        if getattr(text_config, "is_causal", True):
+            attn_cls = Attention
+        else:
+            attn_cls = EncoderOnlyAttention
+
+        return [attn_cls] * text_config.num_hidden_layers
