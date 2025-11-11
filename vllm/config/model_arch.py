@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import functools
+import json
 from dataclasses import field
 from typing import Any
 
@@ -14,7 +15,7 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
-@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True, extra="allow"))
 class ModelArchitectureTextConfig:
     model_type: str
     hidden_size: int
@@ -52,8 +53,12 @@ class ModelArchitectureTextConfig:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+    def __repr__(self):
+        config_dict_json = json.dumps(self.__dict__, indent=2, sort_keys=True) + "\n"
+        return f"{self.__class__.__name__} {config_dict_json}"
 
-@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True, extra="allow"))
 class ModelArchitectureVisionConfig:
     def __init__(
         self,
@@ -62,8 +67,12 @@ class ModelArchitectureVisionConfig:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+    def __repr__(self):
+        config_dict_json = json.dumps(self.__dict__, indent=2, sort_keys=True) + "\n"
+        return f"{self.__class__.__name__} {config_dict_json}"
 
-@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
+
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True, extra="allow"))
 class ModelArchitectureAudioConfig:
     def __init__(
         self,
@@ -72,6 +81,10 @@ class ModelArchitectureAudioConfig:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+    def __repr__(self):
+        config_dict_json = json.dumps(self.__dict__, indent=2, sort_keys=True) + "\n"
+        return f"{self.__class__.__name__} {config_dict_json}"
+
 
 @config
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
@@ -79,6 +92,9 @@ class ModelArchitectureConfig:
     """
     Configuration for model architecture
     """
+
+    text_config: ModelArchitectureTextConfig = field(init=True)
+    """Text model configuration containing text-specific architecture details."""
 
     architectures: list[str] = field(default_factory=list)
     """List of model architecture class names (e.g., ['LlamaForCausalLM'])."""
@@ -96,13 +112,10 @@ class ModelArchitectureConfig:
     per_layer_attention_cls: list[type[nn.Module]] = field(default_factory=list)
     """Per-layer attention class of the model."""
 
-    text_config: ModelArchitectureTextConfig = field(init=True)
-    """Text model configuration containing text-specific architecture details."""
-
-    vision: ModelArchitectureVisionConfig | None = None
+    vision_config: ModelArchitectureVisionConfig | None = None
     """Vision model configuration for multimodal models (optional)."""
 
-    audio: ModelArchitectureAudioConfig | None = None
+    audio_config: ModelArchitectureAudioConfig | None = None
     """Audio model configuration for multimodal models (optional)."""
 
     def __init__(

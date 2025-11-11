@@ -1240,7 +1240,7 @@ class ModelConfig:
     @property
     def is_deepseek_mla(self) -> bool:
         if self.model_arch_config:
-            return self.model_arch_config.use_deepseek_mla
+            return self.model_arch_config.text_config.use_deepseek_mla
         if not hasattr(self.hf_text_config, "model_type"):
             return False
         elif self.hf_text_config.model_type in (
@@ -1265,7 +1265,7 @@ class ModelConfig:
 
     def get_head_size(self) -> int:
         if self.model_arch_config:
-            return self.model_arch_config.head_size
+            return self.model_arch_config.text_config.head_dim
 
         # TODO remove hard code
         if self.is_deepseek_mla:
@@ -1301,7 +1301,7 @@ class ModelConfig:
     def get_total_num_kv_heads(self) -> int:
         """Returns the total number of KV heads."""
         if self.model_arch_config:
-            return self.model_arch_config.num_key_value_heads
+            return self.model_arch_config.text_config.num_key_value_heads
 
         # For GPTBigCode & Falcon:
         # NOTE: for falcon, when new_decoder_architecture is True, the
@@ -1382,7 +1382,7 @@ class ModelConfig:
     def get_num_experts(self) -> int:
         """Returns the number of experts in the model."""
         if self.model_arch_config:
-            return self.model_arch_config.num_experts
+            return self.model_arch_config.text_config.num_experts
 
         num_expert_names = [
             "num_experts",  # Jamba
