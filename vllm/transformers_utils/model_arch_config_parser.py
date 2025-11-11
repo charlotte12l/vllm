@@ -256,7 +256,7 @@ def get_quantization_config(
 ) -> dict[str, Any] | None:
     # ModelOpt 0.31.0 and after saves the quantization config in the model
     # config file.
-    quantization_config = config_dict.get("quantization_config")
+    quantization_config = config_dict.pop("quantization_config", None)
 
     # ModelOpt 0.29.0 and before saves the quantization config in a separate
     # "hf_quant_config.json" in the same directory as the model config file.
@@ -293,6 +293,21 @@ def get_quantization_config(
                 )
 
     return quantization_config
+
+
+def get_torch_dtype(config_dict: dict[str, Any]):
+    config_dtype = config_dict.pop("dtype", None)
+
+    # Fallbacks for multi-modal models if the root config
+    # does not define dtype
+    if config_dtype is None:
+        config_dtype = config_dict["text_config"].get("dtype", None)
+    if config_dtype is None and "vision_config" in config_dict:
+        config_dtype = config_dict["vision_config"].get("dtype", None)
+    if config_dtype is None and hasattr(config_dict, "encoder_config"):
+        config_dtype = config_dict["encoder_config"].get("dtype", None)
+
+    return config_dtype
 
 
 class HFModelArchConfigParser(ModelArchConfigParserBase):
@@ -358,6 +373,10 @@ class HFModelArchConfigParser(ModelArchConfigParserBase):
                 else:
                     raise e
 
+        architectures = config_dict.pop("architectures", [])
+        quantization_config = get_quantization_config(model, revision, config_dict)
+        torch_dtype = get_torch_dtype(config_dict)
+
         standard_fields, text_config_dict = extract_standard_text_config_field(
             config_dict
         )
@@ -376,7 +395,6 @@ class HFModelArchConfigParser(ModelArchConfigParserBase):
             model_type = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES[model_type]
             architectures = [model_type]
 
-        architectures = config_dict.get("architectures", [])
         # Architecture mapping for models without explicit architectures field
         if not architectures:
             if model_type not in MODEL_MAPPING_NAMES:
@@ -392,8 +410,6 @@ class HFModelArchConfigParser(ModelArchConfigParserBase):
 
         vision_config_dict = config_dict.get("vision_config", {})
         audio_config_dict = config_dict.get("audio_config", {})
-
-        quantization_config = config_dict.get("quantization_config", None)
 
         per_layer_attention_cls = get_per_layer_attention_cls(
             architectures, model_impl, text_config
@@ -414,8 +430,8 @@ class HFModelArchConfigParser(ModelArchConfigParserBase):
         arch_config = ModelArchitectureConfig(
             architectures=architectures,
             model_type=model_type,
-            quantization_config=quantization_config or {},
-            torch_dtype=str(config_dict.get("torch_dtype", "float32")),
+            quantization_config=quantization_config,
+            torch_dtype=torch_dtype,
             per_layer_attention_cls=per_layer_attention_cls,
             text_config=text_config,
             vision=vision_config,
