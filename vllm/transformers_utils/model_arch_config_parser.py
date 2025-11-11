@@ -253,7 +253,7 @@ def get_per_layer_attention_cls(
 
 def get_quantization_config(
     model: str | Path, revision: str | None, config_dict: dict[str, Any]
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     # ModelOpt 0.31.0 and after saves the quantization config in the model
     # config file.
     quantization_config = config_dict.pop("quantization_config", None)
@@ -292,7 +292,7 @@ def get_quantization_config(
                     scale_fmt,
                 )
 
-    return quantization_config
+    return quantization_config or {}
 
 
 def get_torch_dtype(config_dict: dict[str, Any]):

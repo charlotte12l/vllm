@@ -572,9 +572,8 @@ def test_model_arch_config_loading():
     assert model_arch_config.torch_dtype == "bfloat16"
     assert len(model_arch_config.per_layer_attention_cls) == hf_config.num_hidden_layers
     assert all(
-        isinstance(attn_cls, Attention)
-        for attn_cls in model_arch_config.per_layer_attention_cls
-    )
+        attn_cls == Attention for attn_cls in model_arch_config.per_layer_attention_cls
+    ), f"got {model_arch_config.per_layer_attention_cls=}"
 
     assert model_arch_text_config.model_type == hf_config.model_type
     assert model_arch_text_config.hidden_size == hf_config.hidden_size
