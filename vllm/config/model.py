@@ -1251,6 +1251,8 @@ class ModelConfig:
             "kimi_k2",
             "kimi_linear",
             "longcat_flash",
+            "pangu_ultra_moe",
+            "pangu_ultra_moe_mtp",
         ):
             return self.hf_text_config.kv_lora_rank is not None
         elif self.hf_text_config.model_type == "eagle":
@@ -1397,7 +1399,7 @@ class ModelConfig:
             return num_experts[0]
         return num_experts
 
-    def get_num_hidden_layers(self, parallel_config: ParallelConfig) -> int:
+    def get_num_hidden_layers(self) -> int:
         if self.model_arch_config:
             total_num_hidden_layers = (
                 self.model_arch_config.text_config.num_hidden_layers
@@ -1409,6 +1411,8 @@ class ModelConfig:
                 or self.hf_config.model_type == "glm4_moe_mtp"
                 or self.hf_config.model_type == "ernie_mtp"
                 or self.hf_config.model_type == "qwen3_next_mtp"
+                or self.hf_config.model_type == "qwen3_next_mtp"
+                or self.hf_config.model_type == "pangu_ultra_moe_mtp"
             ):
                 total_num_hidden_layers = getattr(
                     self.hf_text_config, "num_nextn_predict_layers", 0
