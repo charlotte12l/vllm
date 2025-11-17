@@ -1319,16 +1319,7 @@ class ModelConfig:
         if self.is_attention_free:
             return 0
 
-        attributes = [
-            # For Falcon:
-            "n_head_kv",
-            "num_kv_heads",
-            # For LLaMA-2:
-            "num_key_value_heads",
-            # For ChatGLM:
-            "multi_query_group_num",
-        ]
-        for attr in attributes:
+        for attr in NUM_HEADS_POSSIBLE_KEYS:
             num_kv_heads = getattr(self.hf_text_config, attr, None)
             if num_kv_heads is not None:
                 return num_kv_heads
@@ -1359,13 +1350,7 @@ class ModelConfig:
         if self.model_arch_config:
             return self.model_arch_config.text_config.num_experts
 
-        num_expert_names = [
-            "num_experts",  # Jamba
-            "moe_num_experts",  # Dbrx
-            "n_routed_experts",  # DeepSeek
-            "num_local_experts",  # Mixtral
-        ]
-        num_experts = getattr_iter(self.hf_text_config, num_expert_names, 0)
+        num_experts = getattr_iter(self.hf_text_config, NUM_EXPERT_POSSIBLE_KEYS, 0)
         if isinstance(num_experts, list):
             # Ernie VL's remote code uses list[int]...
             # The values are always the same so we just take the first one.
