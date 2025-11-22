@@ -39,6 +39,7 @@ from vllm.transformers_utils.model_arch_config import (
     SUPPORTED_ARCHITECTURES as MODEL_ARCH_CONFIG_SUPPORTED_ARCHITECTURES,
 )
 from vllm.transformers_utils.model_arch_config import get_model_arch_config
+from vllm.transformers_utils.model_arch_config_parser import NUM_EXPERT_POSSIBLE_KEYS, NUM_HEADS_POSSIBLE_KEYS, ModelArchConfigConvertorBase
 from vllm.transformers_utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
 from vllm.transformers_utils.utils import maybe_model_redirect
 from vllm.utils.import_utils import LazyLoader
@@ -962,38 +963,18 @@ class ModelConfig:
 
         return "embed"
 
-    def _parse_quant_hf_config(self, hf_config: PretrainedConfig):
-        quant_cfg = getattr(hf_config, "quantization_config", None)
-        if quant_cfg is None:
-            # compressed-tensors uses a "compression_config" key
-            quant_cfg = getattr(hf_config, "compression_config", None)
-
-        else:
-            # Set quant_method for ModelOpt models.
-            producer_name = quant_cfg.get("producer", {}).get("name")
-            if producer_name == "modelopt":
-                quant_algo = quant_cfg.get("quantization", {}).get("quant_algo")
-                if quant_algo == "FP8":
-                    quant_cfg["quant_method"] = "modelopt"
-                elif quant_algo == "NVFP4":
-                    quant_cfg["quant_method"] = "modelopt_fp4"
-                elif quant_algo is not None:
-                    raise ValueError(f"Unknown ModelOpt quant algo: {quant_algo}")
-
-        return quant_cfg
-
     def _verify_quantization(self) -> None:
         supported_quantization = me_quant.QUANTIZATION_METHODS
         if self.quantization is not None:
             self.quantization = cast(me_quant.QuantizationMethods, self.quantization)
 
         # Parse quantization method from the HF model config, if available.
-        quant_cfg = self._parse_quant_hf_config(self.hf_config)
+        quant_cfg = ModelArchConfigConvertorBase.normalize_quantization_config(self.hf_config)
         if quant_cfg is None and (
             text_config := getattr(self.hf_config, "text_config", None)
         ):
             # Check the text config as well for multi-modal models.
-            quant_cfg = self._parse_quant_hf_config(text_config)
+            quant_cfg = ModelArchConfigConvertorBase.normalize_quantization_config(text_config)
 
         if quant_cfg is not None:
             # Use the community standard 'quant_method'
@@ -1260,18 +1241,7 @@ class ModelConfig:
         if self.is_attention_free:
             return 0
 
-        # NOTE: Some configs may set head_dim=None in the config
-        if getattr(self.hf_text_config, "head_dim", None) is not None:
-            return self.hf_text_config.head_dim
-
-        # NOTE: Some models (such as PLaMo2.1) use `hidden_size_per_head`
-        if getattr(self.hf_text_config, "hidden_size_per_head", None) is not None:
-            return self.hf_text_config.hidden_size_per_head
-
-        # FIXME(woosuk): This may not be true for all models.
-        return (
-            self.hf_text_config.hidden_size // self.hf_text_config.num_attention_heads
-        )
+        return ModelArchConfigConvertorBase.extract_head_size(self.hf_text_config)
 
     def get_total_num_kv_heads(self) -> int:
         """Returns the total number of KV heads."""
@@ -1319,14 +1289,7 @@ class ModelConfig:
         if self.is_attention_free:
             return 0
 
-        for attr in NUM_HEADS_POSSIBLE_KEYS:
-            num_kv_heads = getattr(self.hf_text_config, attr, None)
-            if num_kv_heads is not None:
-                return num_kv_heads
-
-        # For non-grouped-query attention models, the number of KV heads is
-        # equal to the number of attention heads.
-        return self.hf_text_config.num_attention_heads
+        return ModelArchConfigConvertorBase.get_total_num_kv_heads(self.hf_text_config)
 
     def get_num_kv_heads(self, parallel_config: ParallelConfig) -> int:
         """Returns the number of KV heads per GPU."""
@@ -1346,43 +1309,27 @@ class ModelConfig:
         return num_heads // parallel_config.tensor_parallel_size
 
     def get_num_experts(self) -> int:
-        """Returns the number of experts in the model."""
-        if self.model_arch_config:
-            return self.model_arch_config.text_config.num_experts
-
-        num_experts = getattr_iter(self.hf_text_config, NUM_EXPERT_POSSIBLE_KEYS, 0)
-        if isinstance(num_experts, list):
-            # Ernie VL's remote code uses list[int]...
-            # The values are always the same so we just take the first one.
-            return num_experts[0]
-        return num_experts
+        return ModelArchConfigConvertorBase.get_num_experts(self.hf_text_config)
 
     def get_num_hidden_layers(self) -> int:
-        if self.model_arch_config:
-            total_num_hidden_layers = (
-                self.model_arch_config.text_config.num_hidden_layers
+        if (
+            self.hf_text_config.model_type == "deepseek_mtp"
+            or self.hf_config.model_type == "mimo_mtp"
+            or self.hf_config.model_type == "glm4_moe_mtp"
+            or self.hf_config.model_type == "ernie_mtp"
+            or self.hf_config.model_type == "qwen3_next_mtp"
+            or self.hf_config.model_type == "qwen3_next_mtp"
+            or self.hf_config.model_type == "pangu_ultra_moe_mtp"
+        ):
+            total_num_hidden_layers = getattr(
+                self.hf_text_config, "num_nextn_predict_layers", 0
+            )
+        elif self.hf_config.model_type == "longcat_flash_mtp":
+            total_num_hidden_layers = getattr(
+                self.hf_text_config, "num_nextn_predict_layers", 1
             )
         else:
-            if (
-                self.hf_text_config.model_type == "deepseek_mtp"
-                or self.hf_config.model_type == "mimo_mtp"
-                or self.hf_config.model_type == "glm4_moe_mtp"
-                or self.hf_config.model_type == "ernie_mtp"
-                or self.hf_config.model_type == "qwen3_next_mtp"
-                or self.hf_config.model_type == "qwen3_next_mtp"
-                or self.hf_config.model_type == "pangu_ultra_moe_mtp"
-            ):
-                total_num_hidden_layers = getattr(
-                    self.hf_text_config, "num_nextn_predict_layers", 0
-                )
-            elif self.hf_config.model_type == "longcat_flash_mtp":
-                total_num_hidden_layers = getattr(
-                    self.hf_text_config, "num_nextn_predict_layers", 1
-                )
-            else:
-                total_num_hidden_layers = getattr(
-                    self.hf_text_config, "num_hidden_layers", 0
-                )
+            total_num_hidden_layers = ModelArchConfigConvertorBase.get_num_hidden_layers(self.hf_text_config)
         return total_num_hidden_layers
 
     def get_layers_start_end_indices(

@@ -54,34 +54,68 @@ NUM_EXPERT_POSSIBLE_KEYS = [
 
 class ModelArchConfigConvertorBase(ABC):
     @classmethod
-    def extract_num_hidden_layers(self, config_dict: dict[str, Any]) -> int:
-        return config_dict.get("num_hidden_layers", 0)
+    def get_num_hidden_layers(self, config: PretrainedConfig) -> int:
+        return getattr(
+            config, "num_hidden_layers", 0
+        )
 
     @classmethod
-    def extract_head_size(
-        self, config_dict: dict[str, Any]
+    def get_num_attention_heads(self, config: PretrainedConfig) -> int:
+        return getattr(config, "num_attention_heads", 0)
+
+    @classmethod
+    def get_head_size(
+        self, config: PretrainedConfig
     ) -> int:
         # NOTE: Some configs may set head_dim=None in the config
-        if config_dict.get("head_dim", None) is not None:
-            return config_dict["head_dim"]
+        if getattr(config, "head_dim", None) is not None:
+            return config.head_dim
 
         # NOTE: Some models (such as PLaMo2.1) use `hidden_size_per_head`
-        if config_dict.get("hidden_size_per_head", None) is not None:
-            return config_dict["hidden_size_per_head"]
+        if getattr(config, "hidden_size_per_head", None) is not None:
+            return config.hidden_size_per_head
 
         # FIXME(woosuk): This may not be true for all models.
-        return config_dict["hidden_size"] // config_dict["num_attention_heads"]
-
+        return (
+            config.hidden_size // config.num_attention_heads
+        )
+    
     @classmethod
-    def extract_total_num_kv_heads(
-        self, config_dict: dict[str, Any],
+    def get_total_num_kv_heads(
+        self, config: PretrainedConfig
     ) -> int:
-        return getattr_iter(config_dict, NUM_HEADS_POSSIBLE_KEYS, 0)
+        attributes = [
+            # For Falcon:
+            "n_head_kv",
+            "num_kv_heads",
+            # For LLaMA-2:
+            "num_key_value_heads",
+            # For ChatGLM:
+            "multi_query_group_num",
+        ]
+        for attr in attributes:
+            num_kv_heads = getattr(self.hf_text_config, attr, None)
+            if num_kv_heads is not None:
+                return num_kv_heads
+    
+        return config.num_attention_heads
 
     @classmethod
-    def extract_num_experts(self, config_dict: dict[str, Any]) -> int:
+    def get_num_experts(self, config: PretrainedConfig) -> int:
         """Returns the number of experts in the model."""
-        return getattr_iter(config_dict, NUM_EXPERT_POSSIBLE_KEYS, 0)
+        num_expert_names = [
+            "num_experts",  # Jamba
+            "moe_num_experts",  # Dbrx
+            "n_routed_experts",  # DeepSeek
+            "num_local_experts",  # Mixtral
+        ]
+        num_experts = getattr_iter(config, num_expert_names, 0)
+        if isinstance(num_experts, list):
+            # Ernie VL's remote code uses list[int]...
+            # The values are always the same so we just take the first one.
+            return num_experts[0]
+        # Coerce to 0 if explicitly set to None
+        return num_experts or 0
 
     def get_torch_dtype(config_dict: dict[str, Any]):
         config_dtype = config_dict.pop("dtype", None)
@@ -97,50 +131,40 @@ class ModelArchConfigConvertorBase(ABC):
 
         return config_dtype
 
-    # Need to make quantization config better
     @classmethod
-    def get_quantization_config(
-        self, model: str | Path, revision: str | None, config_dict: dict[str, Any]
-    ) -> dict[str, Any]:
-        # ModelOpt 0.31.0 and after saves the quantization config in the model
-        # config file.
-        quantization_config = config_dict.get("quantization_config", None)
+    def normalize_quantization_config(
+        self,  hf_config: PretrainedConfig
+    ):
+        quant_cfg = getattr(hf_config, "quantization_config", None)
+        if quant_cfg is None:
+            # compressed-tensors uses a "compression_config" key
+            quant_cfg = getattr(hf_config, "compression_config", None)
 
-        # ModelOpt 0.29.0 and before saves the quantization config in a separate
-        # "hf_quant_config.json" in the same directory as the model config file.
-        if quantization_config is None and file_or_path_exists(
-            model, "hf_quant_config.json", revision
-        ):
-            quantization_config = get_hf_file_to_dict(
-                "hf_quant_config.json", model, revision
+        else:
+            # Set quant_method for ModelOpt models.
+            producer_name = quant_cfg.get("producer", {}).get("name")
+            if producer_name == "modelopt":
+                quant_algo = quant_cfg.get("quantization", {}).get("quant_algo")
+                if quant_algo == "FP8":
+                    quant_cfg["quant_method"] = "modelopt"
+                elif quant_algo == "NVFP4":
+                    quant_cfg["quant_method"] = "modelopt_fp4"
+                elif quant_algo is not None:
+                    raise ValueError(f"Unknown ModelOpt quant algo: {quant_algo}")
+
+        if quant_cfg is not None:
+            # Use the community standard 'quant_method'
+            quant_method = quant_cfg.get("quant_method", "").lower()
+
+            # Normalize library names
+            quant_method = quant_method.replace(
+                "compressed_tensors", "compressed-tensors"
             )
 
-        if quantization_config is not None:
-            # config.quantization_config = quantization_config
-            # auto-enable DeepGEMM UE8M0 if model config requests it
-            scale_fmt = quantization_config.get("scale_fmt", None)
-            if scale_fmt in ("ue8m0",):
-                if not envs.is_set("VLLM_USE_DEEP_GEMM_E8M0"):
-                    os.environ["VLLM_USE_DEEP_GEMM_E8M0"] = "1"
-                    logger.info_once(
-                        (
-                            "Detected quantization_config.scale_fmt=%s; "
-                            "enabling UE8M0 for DeepGEMM."
-                        ),
-                        scale_fmt,
-                    )
-                elif not envs.VLLM_USE_DEEP_GEMM_E8M0:
-                    logger.warning_once(
-                        (
-                            "Model config requests UE8M0 "
-                            "(quantization_config.scale_fmt=%s), but "
-                            "VLLM_USE_DEEP_GEMM_E8M0=0 is set; "
-                            "UE8M0 for DeepGEMM disabled."
-                        ),
-                        scale_fmt,
-                    )
+            quant_cfg["quant_method"] = quant_method
 
-        return quantization_config or {}
+        return quant_cfg
+
 
     @classmethod
     def get_per_layer_attention_cls(
@@ -166,27 +190,14 @@ class ModelArchConfigConvertorBase(ABC):
         model_arch_config = ModelArchitectureConfig(
             model_type = text_config.model_type,
             hidden_size = text_config.hidden_size,
-
+            num_hidden_layers=self.get_num_hidden_layers(text_config),
+            num_attention_heads=self.get_num_attention_heads(text_config),
+            head_dim = self.get_head_dim(text_config),
+            vocab_size = text_config.vocab_size,
+            num_key_value_heads = self.get_total_num_kv_heads(text_config),
+            num_experts = self.get_num_experts(text_config),
+            quantization_config= self.normalize_quantization_config(text_config),
         )
-        # standard_fields = {}
-        # standard_fields["model_type"] = 
-
-        # standard_fields["hidden_size"] = text_config_dict.pop("hidden_size")
-
-        # (standard_fields["num_hidden_layers"]) = extract_num_hidden_layers(
-        #     text_config_dict, standard_fields["model_type"]
-        # )
-        # standard_fields["num_attention_heads"] = text_config_dict.pop("num_attention_heads")
-
-        # standard_fields["use_deepseek_mla"] = extract_use_deepseek_mla(
-        #     text_config_dict, standard_fields["model_type"]
-        # )
-        # standard_fields["head_dim"] = extract_head_size(text_config_dict, standard_fields)
-        # standard_fields["vocab_size"] = text_config_dict.pop("vocab_size")
-        # standard_fields["num_key_value_heads"] = extract_total_num_kv_heads(
-        #     text_config_dict, standard_fields
-        # )
-        # standard_fields["num_experts"] = extract_num_experts(text_config_dict)
 
         return 
 
