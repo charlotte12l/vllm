@@ -34,24 +34,6 @@ from vllm.utils.import_utils import LazyLoader
 
 logger = init_logger(__name__)
 
-NUM_HEADS_POSSIBLE_KEYS = [
-    # For Falcon:
-    "n_head_kv",
-    "num_kv_heads",
-    # For LLaMA-2:
-    "num_key_value_heads",
-    # For ChatGLM:
-    "multi_query_group_num",
-]
-
-
-NUM_EXPERT_POSSIBLE_KEYS = [
-    "num_experts",  # Jamba
-    "moe_num_experts",  # Dbrx
-    "n_routed_experts",  # DeepSeek
-    "num_local_experts",  # Mixtral
-]
-
 class ModelArchConfigConvertorBase(ABC):
     @classmethod
     def get_num_hidden_layers(self, config: PretrainedConfig) -> int:
@@ -117,23 +99,45 @@ class ModelArchConfigConvertorBase(ABC):
         # Coerce to 0 if explicitly set to None
         return num_experts or 0
 
-    def get_torch_dtype(config_dict: dict[str, Any]):
-        config_dtype = config_dict.pop("dtype", None)
+    @classmethod
+    def get_torch_dtype(self, config: PretrainedConfig, model_id: str, revision: str | None):
+        # NOTE: getattr(config, "dtype", torch.float32) is not correct
+        # because config.dtype can be None.
+        config_dtype = getattr(config, "dtype", None)
 
         # Fallbacks for multi-modal models if the root config
         # does not define dtype
         if config_dtype is None:
-            config_dtype = config_dict["text_config"].get("dtype", None)
-        if config_dtype is None and "vision_config" in config_dict:
-            config_dtype = config_dict["vision_config"].get("dtype", None)
-        if config_dtype is None and hasattr(config_dict, "encoder_config"):
-            config_dtype = config_dict["encoder_config"].get("dtype", None)
+            config_dtype = getattr(config.get_text_config(), "dtype", None)
+        if config_dtype is None and hasattr(config, "vision_config"):
+            config_dtype = getattr(config.vision_config, "dtype", None)
+        if config_dtype is None and hasattr(config, "encoder_config"):
+            config_dtype = getattr(config.encoder_config, "dtype", None)
+
+        # Try to read the dtype of the weights if they are in safetensors format
+        if config_dtype is None:
+            repo_mt = try_get_safetensors_metadata(model_id, revision=revision)
+
+            if repo_mt and (files_mt := repo_mt.files_metadata):
+                param_dtypes: set[torch.dtype] = {
+                    _SAFETENSORS_TO_TORCH_DTYPE[dtype_str]
+                    for file_mt in files_mt.values()
+                    for dtype_str in file_mt.parameter_count
+                    if dtype_str in _SAFETENSORS_TO_TORCH_DTYPE
+                }
+
+                if param_dtypes:
+                    return common_broadcastable_dtype(param_dtypes)
+
+        if config_dtype is None:
+            config_dtype = torch.float32
 
         return config_dtype
 
+
     @classmethod
     def normalize_quantization_config(
-        self,  hf_config: PretrainedConfig
+        self,  config: PretrainedConfig
     ):
         quant_cfg = getattr(hf_config, "quantization_config", None)
         if quant_cfg is None:
@@ -165,22 +169,18 @@ class ModelArchConfigConvertorBase(ABC):
 
         return quant_cfg
 
-
-    @classmethod
     def get_per_layer_attention_cls(
-        self, hf_config,
+        self, config: PretrainedConfig,
     ) -> list[type[nn.Module]]:
-        # layer_types = hf_config.layer_types
-        
-        # layer_types_cls = [AttentionMapping[layer_type] for layer_type in layer_types]
 
-        # All full attention
-        return layer_types_cls
+        return [Attention for _ in range(self.get_num_hidden_layers(config))]
 
     @abstractmethod
     def convert(
         self,
-        hf_config: PretrainedConfig
+        hf_config: PretrainedConfig,
+        model_id: str,
+        revision: str | None,
     ) -> ModelArchitectureConfig:
         if hasattr(hf_config, "text_config"):
             text_config = hf_config.text_config
@@ -197,148 +197,19 @@ class ModelArchConfigConvertorBase(ABC):
             num_key_value_heads = self.get_total_num_kv_heads(text_config),
             num_experts = self.get_num_experts(text_config),
             quantization_config= self.normalize_quantization_config(text_config),
+            dtype = self.get_torch_dtype(config, model_id, revision),
         )
 
-        return 
+        return model_arch_config
 
 
-if TYPE_CHECKING:
-    import vllm.model_executor.models as me_models
-else:
-    me_models = LazyLoader("model_executor", globals(), "vllm.model_executor.models")
-
-
-
-
-
-
-
-class HFModelArchConfigParser(ModelArchConfigParserBase):
-    def parse(
-        self,
-        model: str | Path,
-        trust_remote_code: bool,
-        revision: str | None = None,
-        code_revision: str | None = None,
-        model_impl: str = "auto",
-        **kwargs,
-    ) -> tuple[dict[str, Any], "ModelArchitectureConfig"]:
-        """Parse the HF config and create ModelArchitectureConfig."""
-
-        is_gguf = kwargs.get("is_gguf", False)
-        if is_gguf:
-            kwargs["gguf_file"] = Path(model).name
-            model = Path(model).parent
-
-        kwargs["local_files_only"] = huggingface_hub.constants.HF_HUB_OFFLINE
-
-        config_dict, _ = PretrainedConfig.get_config_dict(
-            model,
-            revision=revision,
-            code_revision=code_revision,
-            token=_get_hf_token(),
-            **kwargs,
-        )
-        # Use custom model class if it's in our registry
-        model_type = config_dict.get("model_type", "")
-
-        if model_type in _CONFIG_REGISTRY:
-            # TODO: check if need to write new config class that
-            # inherient ModelArchitectureTextConfig for each of those models
-            raise NotImplementedError
+class LlamaModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    def get_per_layer_attention_cls(
+        self, config: PretrainedConfig,
+    ) -> list[type[nn.Module]]:
+        if getattr(config, "is_causal", True):
+            attn_cls = Attention
         else:
-            # We use AutoConfig.from_pretrained to leverage some existing
-            # standardization in PretrainedConfig
-            try:
-                kwargs = _maybe_update_auto_config_kwargs(kwargs, model_type=model_type)
-                # https://github.com/huggingface/transformers/blob/e8a6eb3304033fdd9346fe3b3293309fe50de238/src/transformers/models/auto/configuration_auto.py#L1238
-                config_dict = AutoConfig.from_pretrained(
-                    model,
-                    trust_remote_code=trust_remote_code,
-                    revision=revision,
-                    code_revision=code_revision,
-                    token=_get_hf_token(),
-                    **kwargs,
-                ).to_dict()
-            except ValueError as e:
-                if (
-                    not trust_remote_code
-                    and "requires you to execute the configuration file" in str(e)
-                ):
-                    err_msg = (
-                        "Failed to load the model config. If the model "
-                        "is a custom model not yet available in the "
-                        "HuggingFace transformers library, consider setting "
-                        "`trust_remote_code=True` in LLM or using the "
-                        "`--trust-remote-code` flag in the CLI."
-                    )
-                    raise RuntimeError(err_msg) from e
-                else:
-                    raise e
+            attn_cls = EncoderOnlyAttention
 
-        architectures = config_dict.pop("architectures", [])
-        quantization_config = get_quantization_config(model, revision, config_dict)
-        torch_dtype = get_torch_dtype(config_dict)
-
-        standard_fields, text_config_dict = extract_standard_text_config_field(
-            config_dict
-        )
-        # Ensure no overlap between standard fields and remaining text config
-        overlap = set(standard_fields.keys()) & set(text_config_dict.keys())
-        assert len(overlap) == 0, (
-            f"Standard fields and text config dict should not overlap, got {overlap}"
-        )
-        # Extract text config fields
-        text_config = ModelArchitectureTextConfig(**standard_fields, **text_config_dict)
-
-        # Special architecture mapping check for GGUF models
-        if is_gguf:
-            if model_type not in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES:
-                raise RuntimeError(f"Can't get gguf config for {model_type}.")
-            model_type = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES[model_type]
-            architectures = [model_type]
-
-        # Architecture mapping for models without explicit architectures field
-        if not architectures:
-            if model_type not in MODEL_MAPPING_NAMES:
-                logger.warning(
-                    "Model config does not have a top-level "
-                    "'architectures' field: expecting "
-                    "`model_arch_overrides={'architectures': ['...']}` "
-                    "to be passed in engine args."
-                )
-            else:
-                model_type = MODEL_MAPPING_NAMES[model_type]
-                architectures = [model_type]
-
-        vision_config_dict = config_dict.get("vision_config", {})
-        audio_config_dict = config_dict.get("audio_config", {})
-
-        per_layer_attention_cls = get_per_layer_attention_cls(
-            architectures, model_impl, text_config
-        )
-
-        # Create ModelArchitectureConfig
-        vision_config = (
-            ModelArchitectureVisionConfig(**vision_config_dict)
-            if vision_config_dict
-            else None
-        )
-        audio_config = (
-            ModelArchitectureAudioConfig(**audio_config_dict)
-            if audio_config_dict
-            else None
-        )
-
-        arch_config = ModelArchitectureConfig(
-            architectures=architectures,
-            model_type=model_type,
-            quantization_config=quantization_config,
-            torch_dtype=torch_dtype,
-            per_layer_attention_cls=per_layer_attention_cls,
-            text_config=text_config,
-            vision=vision_config,
-            audio=audio_config,
-        )
-
-        return config_dict, arch_config
+        return [attn_cls] * self.get_num_hidden_layers(config)

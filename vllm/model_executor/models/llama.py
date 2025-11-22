@@ -729,12 +729,3 @@ class LlamaForCausalLM(nn.Module, SupportsLoRA, SupportsPP, SupportsEagle3):
                 name = name.replace(item, mapping[item])
 
         return name, loaded_weight
-
-    @classmethod
-    def get_per_layer_attention_cls(cls, text_config: ModelArchitectureTextConfig):
-        if getattr(text_config, "is_causal", True):
-            attn_cls = Attention
-        else:
-            attn_cls = EncoderOnlyAttention
-
-        return [attn_cls] * text_config.num_hidden_layers

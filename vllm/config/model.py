@@ -1797,46 +1797,6 @@ def _check_valid_dtype(model_type: str, dtype: torch.dtype):
     return True
 
 
-def _find_dtype(
-    model_id: str,
-    config: PretrainedConfig,
-    *,
-    revision: str | None,
-):
-    # NOTE: getattr(config, "dtype", torch.float32) is not correct
-    # because config.dtype can be None.
-    config_dtype = getattr(config, "dtype", None)
-
-    # Fallbacks for multi-modal models if the root config
-    # does not define dtype
-    if config_dtype is None:
-        config_dtype = getattr(config.get_text_config(), "dtype", None)
-    if config_dtype is None and hasattr(config, "vision_config"):
-        config_dtype = getattr(config.vision_config, "dtype", None)
-    if config_dtype is None and hasattr(config, "encoder_config"):
-        config_dtype = getattr(config.encoder_config, "dtype", None)
-
-    # Try to read the dtype of the weights if they are in safetensors format
-    if config_dtype is None:
-        repo_mt = try_get_safetensors_metadata(model_id, revision=revision)
-
-        if repo_mt and (files_mt := repo_mt.files_metadata):
-            param_dtypes: set[torch.dtype] = {
-                _SAFETENSORS_TO_TORCH_DTYPE[dtype_str]
-                for file_mt in files_mt.values()
-                for dtype_str in file_mt.parameter_count
-                if dtype_str in _SAFETENSORS_TO_TORCH_DTYPE
-            }
-
-            if param_dtypes:
-                return common_broadcastable_dtype(param_dtypes)
-
-    if config_dtype is None:
-        config_dtype = torch.float32
-
-    return config_dtype
-
-
 def _resolve_auto_dtype(
     model_type: str,
     config_dtype: torch.dtype,
@@ -1891,7 +1851,7 @@ def _get_and_verify_dtype(
     is_pooling_model: bool,
     revision: str | None = None,
 ) -> torch.dtype:
-    config_dtype = _find_dtype(model_id, config, revision=revision)
+    config_dtype = ModelArchConfigConvertorBase.get_torch_dtype(config, model_id, revision=revision)
     model_type = config.model_type
 
     if isinstance(dtype, str):
