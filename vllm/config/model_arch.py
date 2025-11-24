@@ -20,26 +20,35 @@ class ModelArchitectureConfig:
     """
     Configuration for model architecture
     """
-
-
-    architectures: list[str] = field(default_factory=list)
+    architectures: list[str]
     """List of model architecture class names (e.g., ['LlamaForCausalLM'])."""
 
     model_type: str
-    """Model type identifier (e.g., 'llama', 'gpt2')."""
+    """Model type identifier (e.g., 'llama', 'gpt_oss')."""
 
     text_model_type: str
+    """Text model type identifier (e.g., 'llama4_text')."""
     
     hidden_size: int
+    """Hidden size of the model."""
     
     num_hidden_layers: int
+    """Number of hidden layers in the model."""
     
     num_attention_heads: int
-    head_dim: int
+    """Number of attention heads in the model."""
+    
+    head_size: int
+    """Head dimension of the model."""
+    
     vocab_size: int
+    """Vocabulary size of the model."""
+    
     num_key_value_heads: int
+    """Number of key value heads in the model."""
+    
     num_experts: int
-
+    """Number of experts in the model."""
 
     quantization_config: dict[str, Any]
     """Quantization configuration dictionary containing quantization parameters."""
@@ -47,7 +56,10 @@ class ModelArchitectureConfig:
     torch_dtype: torch.dtype
     """PyTorch data type for model weights (e.g., 'float16', 'bfloat16')."""
 
-    per_layer_attention_cls: list[type[nn.Module]]
+    layer_types: list[str] | None
+    """List of layer types (e.g., ['full_attention', 'sliding_attention', 'full_attention'])."""
+
+    layer_types_cls: list[type[nn.Module]]
     """Per-layer attention class of the model."""
 
     support_multimodal: bool

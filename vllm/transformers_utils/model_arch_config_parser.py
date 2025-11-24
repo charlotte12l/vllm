@@ -5,17 +5,21 @@ import os
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, List
 
 import huggingface_hub
+import torch
+from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
 from torch import nn
 from transformers import AutoConfig, PretrainedConfig
 from transformers.models.auto.modeling_auto import (
     MODEL_FOR_CAUSAL_LM_MAPPING_NAMES,
     MODEL_MAPPING_NAMES,
 )
-
 from vllm import envs
+from vllm.attention import Attention
+from vllm.attention.layers.encoder_only_attention import EncoderOnlyAttention
+from vllm.config.utils import getattr_iter
 from vllm.config.model_arch import (
     ModelArchitectureAudioConfig,
     ModelArchitectureConfig,
@@ -29,10 +33,12 @@ from vllm.transformers_utils.config import (
     _maybe_update_auto_config_kwargs,
     file_or_path_exists,
     get_hf_file_to_dict,
+    try_get_safetensors_metadata,
 )
 from vllm.utils.import_utils import LazyLoader
+from vllm.utils.torch_utils import common_broadcastable_dtype
 
-logger = init_logger(__name__) #
+logger = init_logger(__name__)
 
 MULTIMODAL_MODEL_ARCHS = [
     "AriaForConditionalGeneration",
@@ -155,7 +161,7 @@ class ModelArchConfigConvertorBase(ABC):
             "multi_query_group_num",
         ]
         for attr in attributes:
-            num_kv_heads = getattr(self.hf_text_config, attr, None)
+            num_kv_heads = getattr(config, attr, None)
             if num_kv_heads is not None:
                 return num_kv_heads
     
@@ -218,10 +224,10 @@ class ModelArchConfigConvertorBase(ABC):
     def normalize_quantization_config(
         self,  config: PretrainedConfig
     ):
-        quant_cfg = getattr(hf_config, "quantization_config", None)
+        quant_cfg = getattr(config, "quantization_config", None)
         if quant_cfg is None:
             # compressed-tensors uses a "compression_config" key
-            quant_cfg = getattr(hf_config, "compression_config", None)
+            quant_cfg = getattr(config, "compression_config", None)
 
         else:
             # Set quant_method for ModelOpt models.
@@ -248,11 +254,14 @@ class ModelArchConfigConvertorBase(ABC):
 
         return quant_cfg
 
-    def get_per_layer_attention_cls(
+    def get_layer_types_cls(
         self, config: PretrainedConfig,
     ) -> list[type[nn.Module]]:
 
         return [Attention for _ in range(self.get_num_hidden_layers(config))]
+
+    def get_attn_type(self, config: PretrainedConfig) -> str:
+        return AttentionType.DECODER
 
     def support_multimodal(self, architectures: List[str]) -> bool:
         if any(
@@ -281,13 +290,15 @@ class ModelArchConfigConvertorBase(ABC):
             hidden_size = text_config.hidden_size,
             num_hidden_layers=self.get_num_hidden_layers(text_config),
             num_attention_heads=self.get_num_attention_heads(text_config),
-            head_dim = self.get_head_dim(text_config),
+            head_size = self.get_head_size(text_config),
             vocab_size = text_config.vocab_size,
             num_key_value_heads = self.get_total_num_kv_heads(text_config),
             num_experts = self.get_num_experts(text_config),
             quantization_config= self.normalize_quantization_config(text_config),
-            dtype = self.get_torch_dtype(config, model_id, revision),
+            dtype = self.get_torch_dtype(hf_config, model_id, revision),
             support_multimodal = self.support_multimodal(hf_config.architectures),
+            layer_types_cls = self.get_layer_types_cls(hf_config),
+            layer_types = self.get_layer_types(hf_config),
         )
 
         return model_arch_config
@@ -303,3 +314,14 @@ class LlamaModelArchConfigConvertor(ModelArchConfigConvertorBase):
             attn_cls = EncoderOnlyAttention
 
         return [attn_cls] * self.get_num_hidden_layers(config)
+
+
+SUPPORTED_MODEL_TYPES = [
+    "llama",
+    "gpt_oss",
+]
+
+# TODO: Support registry
+MODEL_ARCH_CONFIG_CONVERTORS = {
+    "llama": LlamaModelArchConfigConvertor,
+}

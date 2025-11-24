@@ -36,10 +36,9 @@ from vllm.transformers_utils.config import (
     uses_mrope,
 )
 from vllm.transformers_utils.model_arch_config import (
-    SUPPORTED_ARCHITECTURES as MODEL_ARCH_CONFIG_SUPPORTED_ARCHITECTURES,
+    SUPPORTED_MODEL_TYPES,
 )
-from vllm.transformers_utils.model_arch_config import get_model_arch_config
-from vllm.transformers_utils.model_arch_config_parser import NUM_EXPERT_POSSIBLE_KEYS, NUM_HEADS_POSSIBLE_KEYS, ModelArchConfigConvertorBase
+from vllm.transformers_utils.model_arch_config_parser import ModelArchConfigConvertorBase
 from vllm.transformers_utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
 from vllm.transformers_utils.utils import maybe_model_redirect
 from vllm.utils.import_utils import LazyLoader
@@ -525,19 +524,9 @@ class ModelConfig:
             self.model, hf_token=self.hf_token, revision=self.revision
         )
         self.model_arch_config = None
-        if (
-            len(self.architectures) == 1
-            and self.architectures[0] in MODEL_ARCH_CONFIG_SUPPORTED_ARCHITECTURES
-        ):
-            assert hf_overrides_fn is None, "Not supported yet"
-            self.model_arch_config = get_model_arch_config(
-                self.hf_config_path or self.model,
-                self.trust_remote_code,
-                self.revision,
-                self.code_revision,
-                self.config_format,
-                model_arch_overrides_kw=hf_overrides_kw,
-            )
+        if hf_config.model_type in SUPPORTED_MODEL_TYPES:
+            convertor = MODEL_ARCH_CONFIG_CONVERTORS.get(hf_config.model_type, ModelArchConfigConvertorBase)
+            self.model_arch_config = convertor.convert(hf_config, self.model, self.revision)
 
         architectures = self.architectures
         registry = self.registry
@@ -1193,8 +1182,6 @@ class ModelConfig:
 
     @property
     def is_deepseek_mla(self) -> bool:
-        if self.model_arch_config:
-            return self.model_arch_config.text_config.use_deepseek_mla
         if not hasattr(self.hf_text_config, "model_type"):
             return False
         elif self.hf_text_config.model_type in (
@@ -1220,9 +1207,6 @@ class ModelConfig:
         return False
 
     def get_head_size(self) -> int:
-        if self.model_arch_config:
-            return self.model_arch_config.text_config.head_dim
-
         # TODO remove hard code
         if self.is_deepseek_mla:
             qk_rope_head_dim = getattr(self.hf_text_config, "qk_rope_head_dim", 0)
@@ -1245,8 +1229,6 @@ class ModelConfig:
 
     def get_total_num_kv_heads(self) -> int:
         """Returns the total number of KV heads."""
-        if self.model_arch_config:
-            return self.model_arch_config.text_config.num_key_value_heads
 
         # For GPTBigCode & Falcon:
         # NOTE: for falcon, when new_decoder_architecture is True, the
