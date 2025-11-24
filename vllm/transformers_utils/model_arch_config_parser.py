@@ -34,6 +34,85 @@ from vllm.utils.import_utils import LazyLoader
 
 logger = init_logger(__name__)
 
+MULTIMODAL_MODEL_ARCHS = [
+    "AriaForConditionalGeneration",
+    "AyaVisionForConditionalGeneration",
+    "BeeForConditionalGeneration",
+    "Blip2ForConditionalGeneration",
+    "ChameleonForConditionalGeneration",
+    "CLIPEmbeddingModel",
+    "Cohere2VisionForConditionalGeneration",
+    "DeepseekOCRForCausalLM",
+    "DeepseekVLV2ForCausalLM",
+    "DotsOCRForCausalLM",
+    "Ernie4_5_VLMoeForConditionalGeneration",
+    "FuyuForCausalLM",
+    "Gemma3ForConditionalGeneration",
+    "Gemma3nForConditionalGeneration",
+    "GLM4VForCausalLM",
+    "Glm4vForConditionalGeneration",
+    "Glm4vMoeForConditionalGeneration",
+    "GraniteSpeechForConditionalGeneration",
+    "H2OVLChatModel",
+    "HCXVisionForCausalLM",
+    "Idefics3ForConditionalGeneration",
+    "InternS1ForConditionalGeneration",
+    "InternVLChatModel",
+    "KeyeForConditionalGeneration",
+    "KeyeVL1_5ForConditionalGeneration",
+    "KimiVLForConditionalGeneration",
+    "LightOnOCRForConditionalGeneration",
+    "Llama4ForConditionalGeneration",
+    "LlamaNemotronVLChatModel",
+    "LlavaForConditionalGeneration",
+    "LlavaNextForConditionalGeneration",
+    "LlavaNextVideoForConditionalGeneration",
+    "LlavaOnevisionForConditionalGeneration",
+    "MantisForConditionalGeneration",
+    "MiDashengLMModel",
+    "MiniCPMO",
+    "MiniCPMV",
+    "MiniCPMVBaseModel",
+    "MiniMaxVL01ForConditionalGeneration",
+    "Mistral3ForConditionalGeneration",
+    "MolmoForCausalLM",
+    "MultiModalMixin",
+    "NemotronH_Nano_VL_V2",
+    "NVLM_D_Model",
+    "Ovis",
+    "Ovis2_5",
+    "PaddleOCRVLForConditionalGeneration",
+    "PaliGemmaForConditionalGeneration",
+    "Phi3VForCausalLM",
+    "Phi4MMForCausalLM",
+    "Phi4MultimodalForCausalLM",
+    "PixtralForConditionalGeneration",
+    "Qwen2_5_VLForConditionalGeneration",
+    "Qwen2_5OmniThinkerForConditionalGeneration",
+    "Qwen2AudioForConditionalGeneration",
+    "Qwen2VLForConditionalGeneration",
+    "Qwen3OmniMoeThinkerForConditionalGeneration",
+    "Qwen3VLForConditionalGeneration",
+    "Qwen3VLMoeForConditionalGeneration",
+    "QwenVLForConditionalGeneration",
+    "RForConditionalGeneration",
+    "SiglipEmbeddingModel",
+    "SkyworkR1VChatModel",
+    "SmolVLMForConditionalGeneration",
+    "Step3VLForConditionalGeneration",
+    "Tarsier2ForConditionalGeneration",
+    "TarsierForConditionalGeneration",
+    "Terratorch",
+    "TransformersMultiModalForCausalLM",
+    "TransformersMultiModalMoEForCausalLM",
+    "TransformersMultiModalEmbeddingModel",
+    "TransformersMultiModalForSequenceClassification",
+    "UltravoxModel",
+    "VoxtralForConditionalGeneration",
+    "WhisperForConditionalGeneration",
+]
+
+
 class ModelArchConfigConvertorBase(ABC):
     @classmethod
     def get_num_hidden_layers(self, config: PretrainedConfig) -> int:
@@ -175,6 +254,14 @@ class ModelArchConfigConvertorBase(ABC):
 
         return [Attention for _ in range(self.get_num_hidden_layers(config))]
 
+    def support_multimodal(self, architectures: List[str]) -> bool:
+        if any(
+            multi_model_arch in architectures
+            for multi_model_arch in MULTIMODAL_MODEL_ARCHS):
+            return True
+        else:
+            return False
+
     @abstractmethod
     def convert(
         self,
@@ -188,7 +275,9 @@ class ModelArchConfigConvertorBase(ABC):
             text_config = hf_config
         
         model_arch_config = ModelArchitectureConfig(
-            model_type = text_config.model_type,
+            architectures = hf_config.architectures,
+            model_dtype = hf_config.model_type,
+            text_model_type = text_config.model_type,
             hidden_size = text_config.hidden_size,
             num_hidden_layers=self.get_num_hidden_layers(text_config),
             num_attention_heads=self.get_num_attention_heads(text_config),
@@ -198,6 +287,7 @@ class ModelArchConfigConvertorBase(ABC):
             num_experts = self.get_num_experts(text_config),
             quantization_config= self.normalize_quantization_config(text_config),
             dtype = self.get_torch_dtype(config, model_id, revision),
+            support_multimodal = self.support_multimodal(hf_config.architectures),
         )
 
         return model_arch_config
