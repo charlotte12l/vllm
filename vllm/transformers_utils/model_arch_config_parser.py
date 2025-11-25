@@ -263,6 +263,7 @@ class ModelArchConfigConvertorBase(ABC):
     def get_attn_type(self, config: PretrainedConfig) -> str:
         return AttentionType.DECODER
 
+    @classmethod
     def support_multimodal(self, architectures: List[str]) -> bool:
         if any(
             multi_model_arch in architectures
@@ -285,7 +286,7 @@ class ModelArchConfigConvertorBase(ABC):
         
         model_arch_config = ModelArchitectureConfig(
             architectures = hf_config.architectures,
-            model_dtype = hf_config.model_type,
+            model_type = hf_config.model_type,
             text_model_type = text_config.model_type,
             hidden_size = text_config.hidden_size,
             num_hidden_layers=self.get_num_hidden_layers(text_config),
@@ -305,7 +306,7 @@ class ModelArchConfigConvertorBase(ABC):
 
 
 class LlamaModelArchConfigConvertor(ModelArchConfigConvertorBase):
-    def get_per_layer_attention_cls(
+    def get_layer_types_cls(
         self, config: PretrainedConfig,
     ) -> list[type[nn.Module]]:
         if getattr(config, "is_causal", True):
@@ -315,13 +316,46 @@ class LlamaModelArchConfigConvertor(ModelArchConfigConvertorBase):
 
         return [attn_cls] * self.get_num_hidden_layers(config)
 
+class Qwen3NextMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    @classmethod
+    def get_num_hidden_layers(
+        self, config: PretrainedConfig,
+    ) -> int:
+        return getattr(
+                config, "num_nextn_predict_layers", 0
+        )
 
-SUPPORTED_MODEL_TYPES = [
-    "llama",
-    "gpt_oss",
-]
+class DeepSeekMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    @classmethod
+    def get_num_hidden_layers(
+        self, config: PretrainedConfig,
+    ) -> int:
+        return getattr(
+            config, "num_nextn_predict_layers", 0
+        ) 
+    
+    @classmethod
+    def get_head_size(
+        self, config: PretrainedConfig,
+    ) -> int:
+        if config.kv_lora_rank is not None: 
+            # is deepseek mla
+            qk_rope_head_dim = getattr(config, "qk_rope_head_dim", 0)
+            if envs.VLLM_MLA_DISABLE:
+                return config.kv_lora_rank + qk_rope_head_dim
+            else:
+                qk_nope_head_dim = getattr(config, "qk_nope_head_dim", 0)
+                if qk_rope_head_dim and qk_nope_head_dim:
+                    return qk_rope_head_dim + qk_nope_head_dim
+        else:
+            return super().get_head_size(config)
 
 # TODO: Support registry
 MODEL_ARCH_CONFIG_CONVERTORS = {
     "llama": LlamaModelArchConfigConvertor,
+    "qwen3_next_mtp": Qwen3NextMTPModelArchConfigConvertor,
+    "deepseek_mtp": DeepSeekMTPModelArchConfigConvertor,
 }
+
+# For those not in MODEL_ARCH_CONFIG_CONVERTORS, we use the base convertor
+SUPPORTED_MODEL_TYPES = list(MODEL_ARCH_CONFIG_CONVERTORS.keys()) + ["gpt_oss"]

@@ -524,9 +524,9 @@ class ModelConfig:
             self.model, hf_token=self.hf_token, revision=self.revision
         )
         self.model_arch_config = None
-        if hf_config.model_type in SUPPORTED_MODEL_TYPES:
-            convertor = MODEL_ARCH_CONFIG_CONVERTORS.get(hf_config.model_type, ModelArchConfigConvertorBase)
-            self.model_arch_config = convertor.convert(hf_config, self.model, self.revision)
+        # if hf_config.model_type in SUPPORTED_MODEL_TYPES:
+        convertor = MODEL_ARCH_CONFIG_CONVERTORS.get(hf_config.model_type, ModelArchConfigConvertorBase)
+        self.model_arch_config = convertor.convert(hf_config, self.model, self.revision)
 
         architectures = self.architectures
         registry = self.registry
