@@ -298,7 +298,7 @@ class ModelArchConfigConvertorBase(ABC):
         return False
 
     @classmethod
-    def derive_max_model_len(self, hf_config: PretrainedConfig) -> int:
+    def derive_max_model_len_and_key(self, hf_config: PretrainedConfig) -> tuple[int, str]:
         derived_max_model_len = float("inf")
         possible_keys = [
             # OPT
@@ -326,7 +326,7 @@ class ModelArchConfigConvertorBase(ABC):
                 max_len_key = key if max_len < derived_max_model_len else max_len_key
                 derived_max_model_len = min(derived_max_model_len, max_len)
 
-        return max_len_key, derived_max_model_len
+        return derived_max_model_len, max_len_key
 
     @classmethod
     def get_layer_types_cls(
@@ -378,9 +378,7 @@ class ModelArchConfigConvertorBase(ABC):
             torch_dtype = self.get_torch_dtype(hf_config, model_id, revision),
             support_multimodal = self.support_multimodal(hf_config.architectures),
             is_deepseek_mla = self.is_deepseek_mla(text_config),
-            layer_types_cls = self.get_layer_types_cls(hf_config),
-            layer_types = self.get_layer_types(hf_config),
-            derived_max_model_len_and_key = self.derive_max_model_len(hf_config),
+            derived_max_model_len_and_key = self.derive_max_model_len_and_key(hf_config),
         )
 
         return model_arch_config
@@ -524,12 +522,12 @@ class CohereModelArchConfigConvertor(ModelArchConfigConvertorBase):
     """Convertor for LongCat Flash MTP which defaults to 1 layer."""
     
     @classmethod
-    def derive_max_model_len(self, hf_config: PretrainedConfig) -> int:
-        max_len_key, derived_max_model_len = super().derive_max_model_len(hf_config)
+    def derive_max_model_len_and_key(self, hf_config: PretrainedConfig) -> Tuple[int, str]:
+        derived_max_model_len, max_len_key = super().derive_max_model_len_and_key(hf_config)
         if tmp_max_len := getattr(hf_config, "model_max_length", None):
             max_len_key = "model_max_length"
             derived_max_model_len = tmp_max_len
-            return max_len_key, derived_max_model_len
+        return derived_max_model_len, max_len_key
 
 
 # TODO: Support registry

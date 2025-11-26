@@ -56,10 +56,11 @@ class ModelArchitectureConfig:
     torch_dtype: torch.dtype
     """PyTorch data type for model weights (e.g., 'float16', 'bfloat16')."""
 
-    layer_types: list[str] | None
-    """List of layer types (e.g., ['full_attention', 'sliding_attention', 'full_attention'])."""
-
-    layer_types_cls: list[type[nn.Module]]
-    """Per-layer attention class of the model."""
-
     support_multimodal: bool
+    """Whether the model supports multimodal input."""
+
+    is_deepseek_mla: bool
+    """Whether the model is a DeepSeek MLA model."""
+
+    derived_max_model_len_and_key: tuple[int, str]
+    """Derived maximum model length and key from the model config."""
