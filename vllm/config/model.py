@@ -524,7 +524,6 @@ class ModelConfig:
             self.model, hf_token=self.hf_token, revision=self.revision
         )
         self.model_arch_config = None
-        # if hf_config.model_type in SUPPORTED_MODEL_TYPES:
         convertor = MODEL_ARCH_CONFIG_CONVERTORS.get(hf_config.model_type, ModelArchConfigConvertorBase)
         self.model_arch_config = convertor.convert(hf_config, self.model, self.revision)
 
@@ -777,7 +776,7 @@ class ModelConfig:
 
     @property
     def architectures(self) -> list[str]:
-        return getattr(self.hf_config, "architectures", [])
+        return self.model_arch_config.architectures
 
     @property
     def architecture(self) -> str:
@@ -958,24 +957,9 @@ class ModelConfig:
             self.quantization = cast(me_quant.QuantizationMethods, self.quantization)
 
         # Parse quantization method from the HF model config, if available.
-        quant_cfg = ModelArchConfigConvertorBase.normalize_quantization_config(self.hf_config)
-        if quant_cfg is None and (
-            text_config := getattr(self.hf_config, "text_config", None)
-        ):
-            # Check the text config as well for multi-modal models.
-            quant_cfg = ModelArchConfigConvertorBase.normalize_quantization_config(text_config)
+        quant_cfg = ModelArchConfigConvertorBase.get_quantization_config(self.hf_config)
 
         if quant_cfg is not None:
-            # Use the community standard 'quant_method'
-            quant_method = quant_cfg.get("quant_method", "").lower()
-
-            # Normalize library names
-            quant_method = quant_method.replace(
-                "compressed_tensors", "compressed-tensors"
-            )
-
-            quant_cfg["quant_method"] = quant_method
-
             # Quantization methods which are overrides (i.e. they have a
             # `override_quantization_method` method) must be checked in order
             # of preference (this is particularly important for GPTQ).
@@ -1055,7 +1039,7 @@ class ModelConfig:
             logger.warning(
                 "CUDA graph is not supported for %s on ROCm yet, fallback "
                 "to eager mode.",
-                self.hf_config.model_type,
+                self.model_arch_config.model_type,
             )
             self.enforce_eager = True
 
@@ -1067,10 +1051,10 @@ class ModelConfig:
         """
         is_bitsandbytes = self.quantization == "bitsandbytes"
         has_quantization_config = (
-            getattr(self.hf_config, "quantization_config", None) is not None
+            self.model_arch_config.quantization_config is not None
         )
         is_8bit = (
-            self.hf_config.quantization_config.get("load_in_8bit", False)
+            self.model_arch_config.quantization_config.get("load_in_8bit", False)
             if has_quantization_config
             else False
         )
@@ -1130,9 +1114,7 @@ class ModelConfig:
                 "make sure sampling results are the same across workers."
             )
 
-        total_num_attention_heads = getattr(
-            self.hf_text_config, "num_attention_heads", 0
-        )
+        total_num_attention_heads = self.model_arch_config.total_num_attention_heads
         tensor_parallel_size = parallel_config.tensor_parallel_size
         if total_num_attention_heads % tensor_parallel_size != 0:
             raise ValueError(
@@ -1175,10 +1157,10 @@ class ModelConfig:
         return getattr(self.hf_text_config, "sliding_window", None)
 
     def get_vocab_size(self) -> int:
-        return getattr(self.hf_text_config, "vocab_size", 0)
+        return self.model_arch_config.vocab_size
 
     def get_hidden_size(self) -> int:
-        return getattr(self.hf_text_config, "hidden_size", 0)
+        return self.model_arch_config.hidden_size
 
     @property
     def is_deepseek_mla(self) -> bool:
@@ -1268,9 +1250,7 @@ class ModelConfig:
                 self.hf_text_config, "layers_block_type", None
             )
             if layers_block_type_value is not None:
-                if hasattr(self.hf_text_config, "model_type") and (
-                    self.hf_text_config.model_type == "zamba2"
-                ):
+                if self.model_arch_config.text_model_type == "zamba2":
                     if attn_block_type:
                         return sum(
                             t == "hybrid" for t in layers_block_type_value[start:end]
@@ -1550,10 +1530,7 @@ class ModelConfig:
 
     @property
     def hidden_size(self):
-        if hasattr(self.hf_config, "hidden_size"):
-            return self.hf_config.hidden_size
-        text_config = self.hf_config.get_text_config()
-        return text_config.hidden_size
+        return self.model_arch_config.hidden_size
 
     @property
     def embedding_size(self):
@@ -1855,7 +1832,7 @@ def _get_and_verify_max_len(
     rope_scaling = getattr(hf_config, "rope_scaling", None)
     # NOTE(woosuk): Gemma3's max_model_len (128K) is already scaled by RoPE
     # scaling, so we skip applying the scaling factor again.
-    if rope_scaling is not None and "gemma3" not in hf_config.model_type:
+    if rope_scaling is not None and "gemma3" not in model_arch_config.model_type:
         # No need to consider "type" key because of patch_rope_scaling when
         # loading HF config
         rope_type = rope_scaling["rope_type"]

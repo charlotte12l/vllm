@@ -26,7 +26,7 @@ class ModelArchitectureConfig:
     model_type: str
     """Model type identifier (e.g., 'llama', 'gpt_oss')."""
 
-    text_model_type: str
+    text_model_type: str | None
     """Text model type identifier (e.g., 'llama4_text')."""
     
     hidden_size: int

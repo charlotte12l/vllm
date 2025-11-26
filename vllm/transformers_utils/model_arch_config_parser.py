@@ -270,6 +270,17 @@ class ModelArchConfigConvertorBase(ABC):
 
         return quant_cfg
 
+    @classmethod
+    def get_quantization_config(
+        self, hf_config: PretrainedConfig
+    ):
+        quant_cfg = self.normalize_quantization_config(hf_config)
+        if quant_cfg is None and (
+            text_config := getattr(hf_config, "text_config", None)
+        ):
+            # Check the text config as well for multi-modal models.
+            quant_cfg = self.normalize_quantization_config(text_config)
+        return quant_cfg
 
     @classmethod
     def is_deepseek_mla(self, hf_text_config: PretrainedConfig) -> bool:
@@ -367,7 +378,7 @@ class ModelArchConfigConvertorBase(ABC):
             architectures = hf_config.architectures,
             model_type = hf_config.model_type,
             text_model_type = text_config.model_type,
-            hidden_size = self.get_hidden_size(text_config),
+            hidden_size = self.get_hidden_size(hf_config),
             num_hidden_layers=self.get_num_hidden_layers(text_config),
             num_attention_heads=self.get_num_attention_heads(text_config),
             head_size = self.get_head_size(text_config),
