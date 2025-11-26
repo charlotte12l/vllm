@@ -140,26 +140,28 @@ class ModelArchConfigConvertorBase(ABC):
 
     @classmethod
     def get_head_size(cls, hf_text_config: PretrainedConfig) -> int:
-        if self.is_deepseek_mla(hf_text_config):
+        if cls.is_deepseek_mla(hf_text_config):
             qk_rope_head_dim = getattr(hf_text_config, "qk_rope_head_dim", 0)
             if envs.VLLM_MLA_DISABLE:
                 return hf_text_config.kv_lora_rank + qk_rope_head_dim
             else:
-                qk_nope_head_dim = getattr(self.hf_text_config, "qk_nope_head_dim", 0)
+                qk_nope_head_dim = getattr(
+                    hf_text_config, "qk_nope_head_dim", 0
+                )
                 if qk_rope_head_dim and qk_nope_head_dim:
-                return qk_rope_head_dim + qk_nope_head_dim
-        
+                    return qk_rope_head_dim + qk_nope_head_dim
+
         # NOTE: Some configs may set head_dim=None in the config
-        if getattr(config, "head_dim", None) is not None:
-            return config.head_dim
+        if getattr(hf_text_config, "head_dim", None) is not None:
+            return hf_text_config.head_dim
 
         # NOTE: Some models (such as PLaMo2.1) use `hidden_size_per_head`
-        if getattr(config, "hidden_size_per_head", None) is not None:
-            return config.hidden_size_per_head
+        if getattr(hf_text_config, "hidden_size_per_head", None) is not None:
+            return hf_text_config.hidden_size_per_head
 
         # FIXME(woosuk): This may not be true for all models.
         return (
-            config.hidden_size // config.num_attention_heads
+            hf_text_config.hidden_size // hf_text_config.num_attention_heads
         )
     
     
@@ -272,18 +274,18 @@ class ModelArchConfigConvertorBase(ABC):
 
     @classmethod
     def get_quantization_config(
-        self, hf_config: PretrainedConfig
+        cls, hf_config: PretrainedConfig
     ):
-        quant_cfg = self.normalize_quantization_config(hf_config)
+        quant_cfg = cls.normalize_quantization_config(hf_config)
         if quant_cfg is None and (
             text_config := getattr(hf_config, "text_config", None)
         ):
             # Check the text config as well for multi-modal models.
-            quant_cfg = self.normalize_quantization_config(text_config)
+            quant_cfg = cls.normalize_quantization_config(text_config)
         return quant_cfg
 
     @classmethod
-    def is_deepseek_mla(self, hf_text_config: PretrainedConfig) -> bool:
+    def is_deepseek_mla(cls, hf_text_config: PretrainedConfig) -> bool:
         if not hasattr(hf_text_config, "model_type"):
             return False
         elif hf_text_config.model_type in (
@@ -309,7 +311,9 @@ class ModelArchConfigConvertorBase(ABC):
         return False
 
     @classmethod
-    def derive_max_model_len_and_key(self, hf_config: PretrainedConfig) -> tuple[int, str]:
+    def derive_max_model_len_and_key(
+        cls, hf_config: PretrainedConfig
+    ) -> tuple[int, str]:
         derived_max_model_len = float("inf")
         possible_keys = [
             # OPT
@@ -334,37 +338,43 @@ class ModelArchConfigConvertorBase(ABC):
         for key in possible_keys:
             max_len = getattr(hf_config, key, None)
             if max_len is not None:
-                max_len_key = key if max_len < derived_max_model_len else max_len_key
+                if max_len < derived_max_model_len:
+                    max_len_key = key
                 derived_max_model_len = min(derived_max_model_len, max_len)
 
         return derived_max_model_len, max_len_key
 
     @classmethod
     def get_layer_types_cls(
-        self, config: PretrainedConfig,
+        cls, config: PretrainedConfig,
     ) -> list[type[nn.Module]]:
         """Get per-layer attention class types."""
-        return [Attention for _ in range(self.get_num_hidden_layers(config))]
-    
-    def get_layer_types(self, config: PretrainedConfig) -> list[str] | None:
+        return [
+            Attention for _ in range(cls.get_num_hidden_layers(config))
+        ]
+
+    @classmethod
+    def get_layer_types(cls, config: PretrainedConfig) -> list[str] | None:
         """Get per-layer types (e.g., ['full_attention', 'sliding_attention'])."""
         return getattr(config, "layer_types", None)
 
-    def get_attn_type(self, config: PretrainedConfig) -> str:
+    @classmethod
+    def get_attn_type(cls, config: PretrainedConfig) -> str:
         return AttentionType.DECODER
 
     @classmethod
-    def support_multimodal(self, architectures: List[str]) -> bool:
+    def support_multimodal(cls, architectures: List[str]) -> bool:
         if any(
             multi_model_arch in architectures
-            for multi_model_arch in MULTIMODAL_MODEL_ARCHS):
+            for multi_model_arch in MULTIMODAL_MODEL_ARCHS
+        ):
             return True
         else:
             return False
 
-    @abstractmethod
+    @classmethod
     def convert(
-        self,
+        cls,
         hf_config: PretrainedConfig,
         model_id: str,
         revision: str | None,
@@ -373,23 +383,31 @@ class ModelArchConfigConvertorBase(ABC):
             text_config = hf_config.text_config
         else:
             text_config = hf_config
-        
+
         model_arch_config = ModelArchitectureConfig(
-            architectures = hf_config.architectures,
-            model_type = hf_config.model_type,
-            text_model_type = text_config.model_type,
-            hidden_size = self.get_hidden_size(hf_config),
-            num_hidden_layers=self.get_num_hidden_layers(text_config),
-            num_attention_heads=self.get_num_attention_heads(text_config),
-            head_size = self.get_head_size(text_config),
-            vocab_size = self.get_vocab_size(text_config),
-            total_num_kv_heads = self.get_total_num_kv_heads(text_config),
-            num_experts = self.get_num_experts(text_config),
-            quantization_config= self.normalize_quantization_config(text_config),
-            torch_dtype = self.get_torch_dtype(hf_config, model_id, revision),
-            support_multimodal = self.support_multimodal(hf_config.architectures),
-            is_deepseek_mla = self.is_deepseek_mla(text_config),
-            derived_max_model_len_and_key = self.derive_max_model_len_and_key(hf_config),
+            architectures=hf_config.architectures,
+            model_type=hf_config.model_type,
+            text_model_type=text_config.model_type,
+            hidden_size=cls.get_hidden_size(text_config),
+            num_hidden_layers=cls.get_num_hidden_layers(text_config),
+            num_attention_heads=cls.get_total_num_attention_heads(
+                text_config
+            ),
+            head_size=cls.get_head_size(text_config),
+            vocab_size=cls.get_vocab_size(text_config),
+            total_num_kv_heads=cls.get_total_num_kv_heads(text_config),
+            num_experts=cls.get_num_experts(text_config),
+            quantization_config=cls.normalize_quantization_config(
+                text_config
+            ),
+            torch_dtype=cls.get_torch_dtype(hf_config, model_id, revision),
+            support_multimodal=cls.support_multimodal(
+                hf_config.architectures
+            ),
+            is_deepseek_mla=cls.is_deepseek_mla(text_config),
+            derived_max_model_len_and_key=cls.derive_max_model_len_and_key(
+                hf_config
+            ),
         )
 
         return model_arch_config
@@ -533,7 +551,9 @@ class CohereModelArchConfigConvertor(ModelArchConfigConvertorBase):
     """Convertor for LongCat Flash MTP which defaults to 1 layer."""
     
     @classmethod
-    def derive_max_model_len_and_key(self, hf_config: PretrainedConfig) -> Tuple[int, str]:
+    def derive_max_model_len_and_key(
+        cls, hf_config: PretrainedConfig
+    ) -> tuple[int, str]:
         derived_max_model_len, max_len_key = super().derive_max_model_len_and_key(hf_config)
         if tmp_max_len := getattr(hf_config, "model_max_length", None):
             max_len_key = "model_max_length"
@@ -562,7 +582,6 @@ MODEL_ARCH_CONFIG_CONVERTORS = {
     "pangu_ultra_moe_mtp": PanguUltraMoeMTPModelArchConfigConvertor,
     "longcat_flash_mtp": LongCatFlashMTPModelArchConfigConvertor,
     "commandr": CohereModelArchConfigConvertor,
-    "aya_vision": AyaVisionModelArchConfigConvertor,
 }
 
 # For those not in MODEL_ARCH_CONFIG_CONVERTORS, we use the base convertor

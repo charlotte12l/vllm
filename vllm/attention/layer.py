@@ -242,18 +242,33 @@ class Attention(nn.Module, AttentionLayerBase):
         `self.kv_cache`.
         """
         super().__init__()
-        sliding_window = self._get_sliding_window(per_layer_sliding_window, cache_config)
-        logger.deprecated("Please use SlidingWindowAttention instead of Attention with sliding_window.")
+        # Determine sliding window
+        if per_layer_sliding_window is not None:
+            sliding_window = per_layer_sliding_window
+        elif cache_config is not None:
+            sliding_window = cache_config.sliding_window
+        else:
+            sliding_window = None
+
+        if sliding_window is not None:
+            logger.deprecated(
+                "Please use SlidingWindowAttention instead of Attention "
+                "with sliding_window."
+            )
 
         self._init_attention(
             num_heads, head_size, scale, num_kv_heads, alibi_slopes,
             cache_config, quant_config, logits_soft_cap, sliding_window,
-            prefix, attn_type, kv_sharing_target_layer_name, 
+            prefix, attn_type, kv_sharing_target_layer_name,
             attn_backend, **extra_impl_args
         )
 
-    @classmethod
-    def get_sliding_window(self, per_layer_sliding_window: int | None = None, cache_config: CacheConfig | None = None) -> int | None:
+    @staticmethod
+    def get_sliding_window(
+        per_layer_sliding_window: int | None = None,
+        cache_config: CacheConfig | None = None
+    ) -> int | None:
+        """Get sliding window size from config."""
         if per_layer_sliding_window is not None:
             return per_layer_sliding_window
         elif cache_config is not None:
@@ -261,20 +276,15 @@ class Attention(nn.Module, AttentionLayerBase):
         else:
             return None
 
-    @classmethod
-    def get_kv_cache_dtype(self, model_config: ModelConfig, cache_config: CacheConfig | None = None) -> str:
+    @staticmethod
+    def get_kv_cache_dtype(
+        cache_config: CacheConfig | None = None
+    ) -> str:
+        """Get KV cache dtype string from cache config."""
         if cache_config is not None:
-            kv_cache_dtype = cache_config.cache_dtype
-            block_size = cache_config.block_size
-            calculate_kv_scales = cache_config.calculate_kv_scales
+            return cache_config.cache_dtype
         else:
-            kv_cache_dtype = "auto"
-            block_size = 16
-            calculate_kv_scales = False
-        
-        return kv_cache_dtype_str_to_dtype(
-            kv_cache_dtype, vllm_config.model_config
-        )
+            return "auto"
 
     def _init_attention(
         self,
@@ -286,7 +296,7 @@ class Attention(nn.Module, AttentionLayerBase):
         cache_config: CacheConfig | None = None,
         quant_config: QuantizationConfig | None = None,
         logits_soft_cap: float | None = None,
-        per_layer_sliding_window: int | None = None,
+        sliding_window: int | None = None,
         prefix: str = "",
         attn_type: str = AttentionType.DECODER,
         kv_sharing_target_layer_name: str | None = None,
@@ -294,18 +304,30 @@ class Attention(nn.Module, AttentionLayerBase):
         **extra_impl_args,
     ) -> None:
         vllm_config = get_current_vllm_config()
-        
-        self.kv_cache_torch_dtype = self.get_kv_cache_dtype(vllm_config.model_config, cache_config)
-        
+
+        # Get KV cache dtype string and convert to torch dtype
+        kv_cache_dtype_str = Attention.get_kv_cache_dtype(cache_config)
+        self.kv_cache_torch_dtype = kv_cache_dtype_str_to_dtype(
+            kv_cache_dtype_str, vllm_config.model_config
+        )
+
         if num_kv_heads is None:
             num_kv_heads = num_heads
         assert num_heads % num_kv_heads == 0, (
-            f"num_heads ({num_heads}) is not divisible by num_kv_heads ({num_kv_heads})"
+            f"num_heads ({num_heads}) is not divisible by "
+            f"num_kv_heads ({num_kv_heads})"
         )
+
+        # Get calculate_kv_scales for quant init
+        if cache_config is not None:
+            calculate_kv_scales = cache_config.calculate_kv_scales
+        else:
+            calculate_kv_scales = False
 
         # Initialize KV cache quantization attributes
         _init_kv_cache_quant(
-            self, quant_config, prefix, kv_cache_dtype, calculate_kv_scales
+            self, quant_config, prefix, kv_cache_dtype_str,
+            calculate_kv_scales
         )
 
         self.num_heads = num_heads
