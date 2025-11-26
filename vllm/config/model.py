@@ -1182,96 +1182,19 @@ class ModelConfig:
 
     @property
     def is_deepseek_mla(self) -> bool:
-        if not hasattr(self.hf_text_config, "model_type"):
-            return False
-        elif self.hf_text_config.model_type in (
-            "deepseek_v2",
-            "deepseek_v3",
-            "deepseek_v32",
-            "deepseek_mtp",
-            "kimi_k2",
-            "kimi_linear",
-            "longcat_flash",
-            "pangu_ultra_moe",
-            "pangu_ultra_moe_mtp",
-        ):
-            return self.hf_text_config.kv_lora_rank is not None
-        elif self.hf_text_config.model_type == "eagle":
-            # if the model is an EAGLE module, check for the
-            # underlying architecture
-            return (
-                self.hf_text_config.model.model_type
-                in ("deepseek_v2", "deepseek_v3", "deepseek_v32")
-                and self.hf_text_config.kv_lora_rank is not None
-            )
-        return False
+        return self.model_arch_config.is_deepseek_mla
 
     def get_head_size(self) -> int:
-        # TODO remove hard code
-        if self.is_deepseek_mla:
-            qk_rope_head_dim = getattr(self.hf_text_config, "qk_rope_head_dim", 0)
-            if self.use_mla:
-                return self.hf_text_config.kv_lora_rank + qk_rope_head_dim
-            else:
-                qk_nope_head_dim = getattr(self.hf_text_config, "qk_nope_head_dim", 0)
-                if qk_rope_head_dim and qk_nope_head_dim:
-                    return qk_rope_head_dim + qk_nope_head_dim
-
-        if hasattr(self.hf_text_config, "model_type") and (
-            self.hf_text_config.model_type == "zamba2"
-        ):
-            return self.hf_text_config.attention_head_dim
-
         if self.is_attention_free:
             return 0
-
-        return ModelArchConfigConvertorBase.extract_head_size(self.hf_text_config)
+        return self.model_arch_config.head_size
 
     def get_total_num_kv_heads(self) -> int:
         """Returns the total number of KV heads."""
-
-        # For GPTBigCode & Falcon:
-        # NOTE: for falcon, when new_decoder_architecture is True, the
-        # multi_query flag is ignored and we use n_head_kv for the number of
-        # KV heads.
-        falcon_model_types = ["falcon", "RefinedWeb", "RefinedWebModel"]
-        new_decoder_arch_falcon = (
-            self.hf_config.model_type in falcon_model_types
-            and getattr(self.hf_config, "new_decoder_architecture", False)
-        )
-        if not new_decoder_arch_falcon and getattr(
-            self.hf_text_config, "multi_query", False
-        ):
-            # Multi-query attention, only one KV head.
-            # Currently, tensor parallelism is not supported in this case.
-            return 1
-
-        # For DBRX and MPT
-        if self.hf_config.model_type == "mpt":
-            if "kv_n_heads" in self.hf_config.attn_config:
-                return self.hf_config.attn_config["kv_n_heads"]
-            return self.hf_config.num_attention_heads
-        if self.hf_config.model_type == "dbrx":
-            return getattr(
-                self.hf_config.attn_config,
-                "kv_n_heads",
-                self.hf_config.num_attention_heads,
-            )
-
-        if self.hf_config.model_type == "nemotron-nas":
-            for block in self.hf_config.block_configs:
-                if not block.attention.no_op:
-                    return (
-                        self.hf_config.num_attention_heads
-                        // block.attention.n_heads_in_group
-                    )
-
-            raise RuntimeError("Couldn't determine number of kv heads")
-
         if self.is_attention_free:
             return 0
 
-        return ModelArchConfigConvertorBase.get_total_num_kv_heads(self.hf_text_config)
+        return self.model_arch_config.total_num_kv_heads
 
     def get_num_kv_heads(self, parallel_config: ParallelConfig) -> int:
         """Returns the number of KV heads per GPU."""
@@ -1287,32 +1210,14 @@ class ModelConfig:
         return max(1, total_num_kv_heads // parallel_config.tensor_parallel_size)
 
     def get_num_attention_heads(self, parallel_config: ParallelConfig) -> int:
-        num_heads = getattr(self.hf_text_config, "num_attention_heads", 0)
+        num_heads = self.model_arch_config.total_num_attention_heads
         return num_heads // parallel_config.tensor_parallel_size
 
     def get_num_experts(self) -> int:
-        return ModelArchConfigConvertorBase.get_num_experts(self.hf_text_config)
+        return self.model_arch_config.num_experts
 
     def get_num_hidden_layers(self) -> int:
-        if (
-            self.hf_text_config.model_type == "deepseek_mtp"
-            or self.hf_config.model_type == "mimo_mtp"
-            or self.hf_config.model_type == "glm4_moe_mtp"
-            or self.hf_config.model_type == "ernie_mtp"
-            or self.hf_config.model_type == "qwen3_next_mtp"
-            or self.hf_config.model_type == "qwen3_next_mtp"
-            or self.hf_config.model_type == "pangu_ultra_moe_mtp"
-        ):
-            total_num_hidden_layers = getattr(
-                self.hf_text_config, "num_nextn_predict_layers", 0
-            )
-        elif self.hf_config.model_type == "longcat_flash_mtp":
-            total_num_hidden_layers = getattr(
-                self.hf_text_config, "num_nextn_predict_layers", 1
-            )
-        else:
-            total_num_hidden_layers = ModelArchConfigConvertorBase.get_num_hidden_layers(self.hf_text_config)
-        return total_num_hidden_layers
+        return self.model_arch_config.num_hidden_layers
 
     def get_layers_start_end_indices(
         self, parallel_config: ParallelConfig
@@ -1672,6 +1577,7 @@ class ModelConfig:
             )
         max_model_len = _get_and_verify_max_len(
             hf_config=self.hf_text_config,
+            model_arch_config=self.model_arch_config,
             tokenizer_config=tokenizer_config,
             max_model_len=max_model_len,
             disable_sliding_window=self.disable_sliding_window,
@@ -1896,6 +1802,7 @@ def _get_head_dtype(
 
 def _get_and_verify_max_len(
     hf_config: PretrainedConfig,
+    model_arch_config: ModelArchConfig,
     tokenizer_config: dict | None,
     max_model_len: int | None,
     disable_sliding_window: bool,
@@ -1904,36 +1811,7 @@ def _get_and_verify_max_len(
     encoder_config: Any | None = None,
 ) -> int:
     """Get and verify the model's maximum length."""
-    derived_max_model_len = float("inf")
-    possible_keys = [
-        # OPT
-        "max_position_embeddings",
-        # GPT-2
-        "n_positions",
-        # MPT
-        "max_seq_len",
-        # ChatGLM2
-        "seq_length",
-        # Command-R
-        "model_max_length",
-        # Whisper
-        "max_target_positions",
-        # Others
-        "max_sequence_length",
-        "max_seq_length",
-        "seq_len",
-    ]
-    # Choose the smallest "max_length" from the possible keys
-    max_len_key = None
-    for key in possible_keys:
-        max_len = getattr(hf_config, key, None)
-        if max_len is not None:
-            max_len_key = key if max_len < derived_max_model_len else max_len_key
-            derived_max_model_len = min(derived_max_model_len, max_len)
-    # For Command-R / Cohere, Cohere2 / Aya Vision models
-    if tmp_max_len := getattr(hf_config, "model_max_length", None):
-        max_len_key = "model_max_length"
-        derived_max_model_len = tmp_max_len
+    max_len_key, derived_max_model_len = model_arch_config.derived_max_model_len_and_key
 
     # If sliding window is manually disabled, max_length should be less
     # than the sliding window length in the model config.

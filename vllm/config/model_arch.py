@@ -35,7 +35,7 @@ class ModelArchitectureConfig:
     num_hidden_layers: int
     """Number of hidden layers in the model."""
     
-    num_attention_heads: int
+    total_num_attention_heads: int
     """Number of attention heads in the model."""
     
     head_size: int
@@ -44,7 +44,7 @@ class ModelArchitectureConfig:
     vocab_size: int
     """Vocabulary size of the model."""
     
-    num_key_value_heads: int
+    total_num_kv_heads: int
     """Number of key value heads in the model."""
     
     num_experts: int
