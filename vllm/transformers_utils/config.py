@@ -634,10 +634,43 @@ def get_config(
             model_type = MODEL_MAPPING_NAMES[config.model_type]
             config.update({"architectures": [model_type]})
 
-    quantization_config = ModelArchConfigParserBase.get_quantization_config(model, revision, config_dict)
+    # ModelOpt 0.31.0 and after saves the quantization config in the model
+    # config file.
+    quantization_config = config_dict.get("quantization_config", None)
+
+    # ModelOpt 0.29.0 and before saves the quantization config in a separate
+    # "hf_quant_config.json" in the same directory as the model config file.
+    if quantization_config is None and file_or_path_exists(
+        model, "hf_quant_config.json", revision
+    ):
+        quantization_config = get_hf_file_to_dict(
+            "hf_quant_config.json", model, revision
+        )
 
     if quantization_config is not None:
         config.quantization_config = quantization_config
+        # auto-enable DeepGEMM UE8M0 if model config requests it
+        scale_fmt = quantization_config.get("scale_fmt", None)
+        if scale_fmt in ("ue8m0",):
+            if not envs.is_set("VLLM_USE_DEEP_GEMM_E8M0"):
+                os.environ["VLLM_USE_DEEP_GEMM_E8M0"] = "1"
+                logger.info_once(
+                    (
+                        "Detected quantization_config.scale_fmt=%s; "
+                        "enabling UE8M0 for DeepGEMM."
+                    ),
+                    scale_fmt,
+                )
+            elif not envs.VLLM_USE_DEEP_GEMM_E8M0:
+                logger.warning_once(
+                    (
+                        "Model config requests UE8M0 "
+                        "(quantization_config.scale_fmt=%s), but "
+                        "VLLM_USE_DEEP_GEMM_E8M0=0 is set; "
+                        "UE8M0 for DeepGEMM disabled."
+                    ),
+                    scale_fmt,
+                )
 
     if hf_overrides_kw:
         logger.debug("Overriding HF config with %s", hf_overrides_kw)
