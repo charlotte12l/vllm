@@ -12,13 +12,15 @@ from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 import torch
 from pydantic import ConfigDict, SkipValidation, field_validator, model_validator
 from pydantic.dataclasses import dataclass
-from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
 
 import vllm.envs as envs
+from vllm.config.model_arch import (
+    ModelArchitectureConfig,
+)
 from vllm.config.multimodal import MMCacheType, MMEncoderTPMode, MultiModalConfig
 from vllm.config.pooler import PoolerConfig
 from vllm.config.scheduler import RunnerType
-from vllm.config.utils import assert_hashable, config, getattr_iter
+from vllm.config.utils import assert_hashable, config
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.transformers_utils.config import (
@@ -31,7 +33,6 @@ from vllm.transformers_utils.config import (
     is_encoder_decoder,
     try_get_dense_modules,
     try_get_generation_config,
-    try_get_safetensors_metadata,
     try_get_tokenizer_config,
     uses_mrope,
 )
@@ -42,7 +43,6 @@ from vllm.transformers_utils.model_arch_config_parser import (
 from vllm.transformers_utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
 from vllm.transformers_utils.utils import maybe_model_redirect
 from vllm.utils.import_utils import LazyLoader
-from vllm.utils.torch_utils import common_broadcastable_dtype
 
 if TYPE_CHECKING:
     from transformers import PretrainedConfig
@@ -1053,9 +1053,7 @@ class ModelConfig:
         # TODO Remove this when bitsandbytes supports.
         """
         is_bitsandbytes = self.quantization == "bitsandbytes"
-        has_quantization_config = (
-            self.model_arch_config.quantization_config is not None
-        )
+        has_quantization_config = self.model_arch_config.quantization_config is not None
         is_8bit = (
             self.model_arch_config.quantization_config.get("load_in_8bit", False)
             if has_quantization_config
@@ -1783,7 +1781,7 @@ def _get_head_dtype(
 
 def _get_and_verify_max_len(
     hf_config: PretrainedConfig,
-    model_arch_config: "ModelArchitectureConfig",
+    model_arch_config: ModelArchitectureConfig,
     tokenizer_config: dict | None,
     max_model_len: int | None,
     disable_sliding_window: bool,
@@ -1792,9 +1790,9 @@ def _get_and_verify_max_len(
     encoder_config: Any | None = None,
 ) -> int:
     """Get and verify the model's maximum length."""
-    (
-        derived_max_model_len, max_len_key
-    ) = model_arch_config.derived_max_model_len_and_key
+    (derived_max_model_len, max_len_key) = (
+        model_arch_config.derived_max_model_len_and_key
+    )
 
     # If sliding window is manually disabled, max_length should be less
     # than the sliding window length in the model config.
