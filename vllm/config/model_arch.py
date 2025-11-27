@@ -19,7 +19,7 @@ logger = init_logger(__name__)
 @dataclass
 class ModelArchitectureConfig:
     """
-    Configuration for model architecture
+    Configuration for model architecture that required by vLLM runtime
     """
     architectures: list[str]
     """List of model architecture class names (e.g., ['LlamaForCausalLM'])."""
@@ -63,5 +63,5 @@ class ModelArchitectureConfig:
     is_deepseek_mla: bool
     """Whether the model is a DeepSeek MLA model."""
 
-    derived_max_model_len_and_key: tuple[int, str]
-    """Derived maximum model length and key from the model config."""
+    derived_max_model_len_and_key: tuple[float, str | None]
+    """Derived maximum model length and key from the hf config."""

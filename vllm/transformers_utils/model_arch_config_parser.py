@@ -298,7 +298,7 @@ class ModelArchConfigConvertorBase:
             )
         return False
 
-    def derive_max_model_len_and_key(self) -> tuple[int, str]:
+    def derive_max_model_len_and_key(self) -> tuple[float, str | None]:
         derived_max_model_len = float("inf")
         possible_keys = [
             # OPT
@@ -342,12 +342,12 @@ class ModelArchConfigConvertorBase:
             text_model_type=getattr(self.hf_text_config, "model_type", None),
             hidden_size=self.get_hidden_size(),
             num_hidden_layers=self.get_num_hidden_layers(),
-            num_attention_heads=self.get_total_num_attention_heads(),
+            total_num_attention_heads=self.get_total_num_attention_heads(),
             head_size=self.get_head_size(),
             vocab_size=self.get_vocab_size(),
             total_num_kv_heads=self.get_total_num_kv_heads(),
             num_experts=self.get_num_experts(),
-            quantization_config=self.get_quantization_config(),
+            quantization_config=self.get_quantization_config(self.hf_config),
             torch_dtype=self.get_torch_dtype(model_id, revision),
             support_multimodal=self.support_multimodal(),
             is_deepseek_mla=self.is_deepseek_mla(),
@@ -463,7 +463,7 @@ class LongCatFlashMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
 
 
 class CohereModelArchConfigConvertor(ModelArchConfigConvertorBase):    
-    def derive_max_model_len_and_key(self) -> tuple[int, str]:
+    def derive_max_model_len_and_key(self) -> tuple[float, str | None]:
         derived_max_model_len, max_len_key = super().derive_max_model_len_and_key()
         if tmp_max_len := getattr(self.hf_text_config, "model_max_length", None):
             max_len_key = "model_max_length"
