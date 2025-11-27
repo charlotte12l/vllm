@@ -5,6 +5,7 @@ import json
 from dataclasses import field
 from typing import Any
 
+import torch
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 from torch import nn

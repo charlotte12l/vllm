@@ -35,10 +35,10 @@ from vllm.transformers_utils.config import (
     try_get_tokenizer_config,
     uses_mrope,
 )
-from vllm.transformers_utils.model_arch_config import (
-    SUPPORTED_MODEL_TYPES,
+from vllm.transformers_utils.model_arch_config_parser import (
+    MODEL_ARCH_CONFIG_CONVERTORS,
+    ModelArchConfigConvertorBase,
 )
-from vllm.transformers_utils.model_arch_config_parser import ModelArchConfigConvertorBase
 from vllm.transformers_utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
 from vllm.transformers_utils.utils import maybe_model_redirect
 from vllm.utils.import_utils import LazyLoader
@@ -524,8 +524,11 @@ class ModelConfig:
             self.model, hf_token=self.hf_token, revision=self.revision
         )
         self.model_arch_config = None
-        convertor = MODEL_ARCH_CONFIG_CONVERTORS.get(hf_config.model_type, ModelArchConfigConvertorBase)
-        self.model_arch_config = convertor.convert(hf_config, self.model, self.revision)
+        convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
+            hf_config.model_type, ModelArchConfigConvertorBase
+        )
+        convertor = convertor_cls(hf_config)
+        self.model_arch_config = convertor.convert(self.model, self.revision)
 
         architectures = self.architectures
         registry = self.registry
@@ -1716,7 +1719,8 @@ def _get_and_verify_dtype(
     is_pooling_model: bool,
     revision: str | None = None,
 ) -> torch.dtype:
-    config_dtype = ModelArchConfigConvertorBase.get_torch_dtype(config, model_id, revision=revision)
+    convertor = ModelArchConfigConvertorBase(config)
+    config_dtype = convertor.get_torch_dtype(model_id, revision=revision)
     model_type = config.model_type
 
     if isinstance(dtype, str):
@@ -1779,7 +1783,7 @@ def _get_head_dtype(
 
 def _get_and_verify_max_len(
     hf_config: PretrainedConfig,
-    model_arch_config: ModelArchConfig,
+    model_arch_config: "ModelArchitectureConfig",
     tokenizer_config: dict | None,
     max_model_len: int | None,
     disable_sliding_window: bool,
@@ -1788,7 +1792,9 @@ def _get_and_verify_max_len(
     encoder_config: Any | None = None,
 ) -> int:
     """Get and verify the model's maximum length."""
-    max_len_key, derived_max_model_len = model_arch_config.derived_max_model_len_and_key
+    (
+        derived_max_model_len, max_len_key
+    ) = model_arch_config.derived_max_model_len_and_key
 
     # If sliding window is manually disabled, max_length should be less
     # than the sliding window length in the model config.
@@ -1821,10 +1827,9 @@ def _get_and_verify_max_len(
 
         default_max_len = 2048
         logger.warning(
-            "The model's config.json does not contain any of the following "
-            "keys to determine the original maximum length of the model: "
-            "%s. Assuming the model's maximum length is %d.",
-            possible_keys,
+            "The model's config.json does not contain any of the keys "
+            "to determine the original maximum length of the model. "
+            "Assuming the model's maximum length is %d.",
             default_max_len,
         )
         derived_max_model_len = default_max_len
