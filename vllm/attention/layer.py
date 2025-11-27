@@ -242,92 +242,36 @@ class Attention(nn.Module, AttentionLayerBase):
         `self.kv_cache`.
         """
         super().__init__()
-        # Determine sliding window
         if per_layer_sliding_window is not None:
+            # per-layer sliding window
             sliding_window = per_layer_sliding_window
         elif cache_config is not None:
+            # model-level sliding window
             sliding_window = cache_config.sliding_window
         else:
             sliding_window = None
 
-        if sliding_window is not None:
-            logger.deprecated(
-                "Please use SlidingWindowAttention instead of Attention "
-                "with sliding_window."
-            )
-
-        self._init_attention(
-            num_heads, head_size, scale, num_kv_heads, alibi_slopes,
-            cache_config, quant_config, logits_soft_cap, sliding_window,
-            prefix, attn_type, kv_sharing_target_layer_name,
-            attn_backend, **extra_impl_args
-        )
-
-    @staticmethod
-    def get_sliding_window(
-        per_layer_sliding_window: int | None = None,
-        cache_config: CacheConfig | None = None
-    ) -> int | None:
-        """Get sliding window size from config."""
-        if per_layer_sliding_window is not None:
-            return per_layer_sliding_window
-        elif cache_config is not None:
-            return cache_config.sliding_window
-        else:
-            return None
-
-    @staticmethod
-    def get_kv_cache_dtype(
-        cache_config: CacheConfig | None = None
-    ) -> str:
-        """Get KV cache dtype string from cache config."""
-        if cache_config is not None:
-            return cache_config.cache_dtype
-        else:
-            return "auto"
-
-    def _init_attention(
-        self,
-        num_heads: int,
-        head_size: int,
-        scale: float,
-        num_kv_heads: int | None = None,
-        alibi_slopes: list[float] | None = None,
-        cache_config: CacheConfig | None = None,
-        quant_config: QuantizationConfig | None = None,
-        logits_soft_cap: float | None = None,
-        sliding_window: int | None = None,
-        prefix: str = "",
-        attn_type: str = AttentionType.DECODER,
-        kv_sharing_target_layer_name: str | None = None,
-        attn_backend: type[AttentionBackend] | None = None,
-        **extra_impl_args,
-    ) -> None:
         vllm_config = get_current_vllm_config()
-
-        # Get KV cache dtype string and convert to torch dtype
-        kv_cache_dtype_str = Attention.get_kv_cache_dtype(cache_config)
+        if cache_config is not None:
+            kv_cache_dtype = cache_config.cache_dtype
+            block_size = cache_config.block_size
+            calculate_kv_scales = cache_config.calculate_kv_scales
+        else:
+            kv_cache_dtype = "auto"
+            block_size = 16
+            calculate_kv_scales = False
         self.kv_cache_torch_dtype = kv_cache_dtype_str_to_dtype(
-            kv_cache_dtype_str, vllm_config.model_config
+            kv_cache_dtype, vllm_config.model_config
         )
-
         if num_kv_heads is None:
             num_kv_heads = num_heads
         assert num_heads % num_kv_heads == 0, (
-            f"num_heads ({num_heads}) is not divisible by "
-            f"num_kv_heads ({num_kv_heads})"
+            f"num_heads ({num_heads}) is not divisible by num_kv_heads ({num_kv_heads})"
         )
-
-        # Get calculate_kv_scales for quant init
-        if cache_config is not None:
-            calculate_kv_scales = cache_config.calculate_kv_scales
-        else:
-            calculate_kv_scales = False
 
         # Initialize KV cache quantization attributes
         _init_kv_cache_quant(
-            self, quant_config, prefix, kv_cache_dtype_str,
-            calculate_kv_scales
+            self, quant_config, prefix, kv_cache_dtype, calculate_kv_scales
         )
 
         self.num_heads = num_heads
@@ -535,65 +479,6 @@ class Attention(nn.Module, AttentionLayerBase):
                 dtype=self.kv_cache_torch_dtype,
             )
 
-    @classmethod
-    def get_kv_cache_spec_from_config(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        block_size = vllm_config.cache_config.block_size
-        model_arch_config = vllm_config.model_config.model_arch_config
-        assert model_arch_config is not None
-        return FullAttentionSpec(
-            block_size=block_size,
-            num_kv_heads=model_arch_config.num_key_value_heads,
-            head_size=model_arch_config.head_size,
-            dtype=Attention.get_kv_cache_dtype(vllm_config.model_config, vllm_config.cache_config)
-        )
-
-class SlidingWindowAttention(Attention):
-    """Sliding window attention with different KV cache spec."""
-    
-    def __init__(
-        self,
-        num_heads: int,
-        head_size: int,
-        scale: float,
-        num_kv_heads: int | None = None,
-        alibi_slopes: list[float] | None = None,
-        cache_config: CacheConfig | None = None,
-        quant_config: QuantizationConfig | None = None,
-        logits_soft_cap: float | None = None,
-        per_layer_sliding_window: int | None = None,
-        prefix: str = "",
-        attn_type: str = AttentionType.DECODER,
-        kv_sharing_target_layer_name: str | None = None,
-        attn_backend: type[AttentionBackend] | None = None,
-        **extra_impl_args,
-    ) -> None:
-        """
-        The KV cache is stored inside this class and is accessed via
-        `self.kv_cache`.
-        """
-        nn.Module.__init__(self)
-        AttentionLayerBase.__init__(self)
-        sliding_window = self.get_sliding_window(per_layer_sliding_window, cache_config)
-        self._init_attention(
-            num_heads, head_size, scale, num_kv_heads, alibi_slopes,
-            cache_config, quant_config, logits_soft_cap, sliding_window,
-            prefix, attn_type, kv_sharing_target_layer_name, 
-            attn_backend, **extra_impl_args
-        )
-    
-    @classmethod
-    def get_kv_cache_spec_from_config(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        block_size = vllm_config.cache_config.block_size
-        # move attention_type out to conifg
-        model_arch_config = vllm_config.model_config.model_arch_config
-        assert model_arch_config is not None
-        return SlidingWindowSpec(
-            block_size=block_size,
-            num_kv_heads=model_arch_config.num_key_value_heads,
-            head_size=model_arch_config.head_size,
-            dtype=Attention.get_kv_cache_dtype(vllm_config.model_config, vllm_config.cache_config),
-            sliding_window=Attention.get_sliding_window(vllm_config.model_config.hf_config.sliding_window, vllm_config.cache_config)
-        )
 
 class MultiHeadAttention(nn.Module):
     """Multi-headed attention without any cache, used for ViT."""
