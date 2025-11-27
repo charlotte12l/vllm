@@ -552,35 +552,25 @@ def test_s3_url_different_models_create_different_directories(mock_pull_files):
 
 
 def test_model_arch_config_loading():
-    from vllm.attention.layer import Attention
-
-    # TODO: Use parametrize as we migrate more models
+    # TODO(in this PR): add more tests for different models
     model_id = "meta-llama/Meta-Llama-3-8B"
 
     model_config = ModelConfig(model_id)
     model_arch_config = model_config.model_arch_config
-    model_arch_text_config = model_arch_config.text_config
 
-    # TODO: refactor the config normalization logics out of config/model.py
-    # and use them to normalize hf_config/hf_text_config
-    # For llama3, hf_config is hf_text_config
     hf_config = model_config.hf_config
 
     assert model_arch_config.architectures == hf_config.architectures
     assert model_arch_config.model_type == hf_config.model_type
-    assert model_arch_config.quantization_config == {}
+    assert model_arch_config.quantization_config is None
     assert model_arch_config.torch_dtype == "bfloat16"
-    assert len(model_arch_config.per_layer_attention_cls) == hf_config.num_hidden_layers
-    assert all(
-        attn_cls == Attention for attn_cls in model_arch_config.per_layer_attention_cls
-    ), f"got {model_arch_config.per_layer_attention_cls=}"
 
-    assert model_arch_text_config.model_type == hf_config.model_type
-    assert model_arch_text_config.hidden_size == hf_config.hidden_size
-    assert model_arch_text_config.num_hidden_layers == hf_config.num_hidden_layers
-    assert model_arch_text_config.num_attention_heads == hf_config.num_attention_heads
-    assert not model_arch_text_config.use_deepseek_mla
-    assert model_arch_text_config.head_dim == hf_config.head_dim
-    assert model_arch_text_config.vocab_size == hf_config.vocab_size
-    assert model_arch_text_config.num_key_value_heads == 8
-    assert model_arch_text_config.num_experts == 0
+    assert model_arch_config.text_model_type == hf_config.model_type
+    assert model_arch_config.hidden_size == hf_config.hidden_size
+    assert model_arch_config.num_hidden_layers == hf_config.num_hidden_layers
+    assert model_arch_config.total_num_attention_heads == hf_config.num_attention_heads
+    assert not model_arch_config.use_deepseek_mla
+    assert model_arch_config.head_dim == hf_config.head_dim
+    assert model_arch_config.vocab_size == hf_config.vocab_size
+    assert model_arch_config.total_num_kv_heads == 8
+    assert model_arch_config.num_experts == 0

@@ -172,19 +172,20 @@ class ModelArchConfigConvertorBase:
         # Coerce to 0 if explicitly set to None
         return num_experts or 0
 
-    def get_torch_dtype(self, model_id: str, revision: str | None):
+    @classmethod
+    def get_torch_dtype(cls, hf_config, model_id: str, revision: str | None):
         # NOTE: getattr(config, "dtype", torch.float32) is not correct
         # because config.dtype can be None.
-        config_dtype = getattr(self.hf_config, "dtype", None)
+        config_dtype = getattr(hf_config, "dtype", None)
 
         # Fallbacks for multi-modal models if the root config
         # does not define dtype
         if config_dtype is None:
-            config_dtype = getattr(self.hf_text_config, "dtype", None)
-        if config_dtype is None and hasattr(self.hf_config, "vision_config"):
-            config_dtype = getattr(self.hf_config.vision_config, "dtype", None)
-        if config_dtype is None and hasattr(self.hf_config, "encoder_config"):
-            config_dtype = getattr(self.hf_config.encoder_config, "dtype", None)
+            config_dtype = getattr(hf_config.get_text_config(), "dtype", None)
+        if config_dtype is None and hasattr(hf_config, "vision_config"):
+            config_dtype = getattr(hf_config.vision_config, "dtype", None)
+        if config_dtype is None and hasattr(hf_config, "encoder_config"):
+            config_dtype = getattr(hf_config.encoder_config, "dtype", None)
 
         # Try to read the dtype of the weights if they are in safetensors format
         if config_dtype is None:
@@ -323,7 +324,7 @@ class ModelArchConfigConvertorBase:
             total_num_kv_heads=self.get_total_num_kv_heads(),
             num_experts=self.get_num_experts(),
             quantization_config=self.get_quantization_config(self.hf_config),
-            torch_dtype=self.get_torch_dtype(model_id, revision),
+            torch_dtype=self.get_torch_dtype(self.hf_config, model_id, revision),
             support_multimodal=self.support_multimodal(),
             is_deepseek_mla=self.is_deepseek_mla(),
             derived_max_model_len_and_key=self.derive_max_model_len_and_key(),

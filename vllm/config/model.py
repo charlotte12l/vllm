@@ -1733,8 +1733,9 @@ def _get_and_verify_dtype(
     is_pooling_model: bool,
     revision: str | None = None,
 ) -> torch.dtype:
-    convertor = ModelArchConfigConvertorBase(config)
-    config_dtype = convertor.get_torch_dtype(model_id, revision=revision)
+    config_dtype = ModelArchConfigConvertorBase.get_torch_dtype(
+        config, model_id, revision=revision
+    )
     model_type = config.model_type
 
     if isinstance(dtype, str):

@@ -49,7 +49,7 @@ class ModelArchitectureConfig:
     quantization_config: dict[str, Any]
     """Quantization configuration dictionary containing quantization parameters."""
 
-    torch_dtype: torch.dtype
+    torch_dtype: torch.dtype | str | None
     """PyTorch data type for model weights (e.g., 'float16', 'bfloat16')."""
 
     support_multimodal: bool
