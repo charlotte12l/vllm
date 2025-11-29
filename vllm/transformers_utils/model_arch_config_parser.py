@@ -17,87 +17,11 @@ from vllm.transformers_utils.config import (
     try_get_safetensors_metadata,
 )
 from vllm.utils.torch_utils import common_broadcastable_dtype
+from vllm.model_executor.models.registry import (
+    _MULTIMODAL_MODELS,
+)
 
 logger = init_logger(__name__)
-
-MULTIMODAL_MODEL_ARCHS = [
-    "AriaForConditionalGeneration",
-    "AyaVisionForConditionalGeneration",
-    "BeeForConditionalGeneration",
-    "Blip2ForConditionalGeneration",
-    "ChameleonForConditionalGeneration",
-    "CLIPEmbeddingModel",
-    "Cohere2VisionForConditionalGeneration",
-    "DeepseekOCRForCausalLM",
-    "DeepseekVLV2ForCausalLM",
-    "DotsOCRForCausalLM",
-    "Ernie4_5_VLMoeForConditionalGeneration",
-    "FuyuForCausalLM",
-    "Gemma3ForConditionalGeneration",
-    "Gemma3nForConditionalGeneration",
-    "GLM4VForCausalLM",
-    "Glm4vForConditionalGeneration",
-    "Glm4vMoeForConditionalGeneration",
-    "GraniteSpeechForConditionalGeneration",
-    "H2OVLChatModel",
-    "HCXVisionForCausalLM",
-    "Idefics3ForConditionalGeneration",
-    "InternS1ForConditionalGeneration",
-    "InternVLChatModel",
-    "KeyeForConditionalGeneration",
-    "KeyeVL1_5ForConditionalGeneration",
-    "KimiVLForConditionalGeneration",
-    "LightOnOCRForConditionalGeneration",
-    "Llama4ForConditionalGeneration",
-    "LlamaNemotronVLChatModel",
-    "LlavaForConditionalGeneration",
-    "LlavaNextForConditionalGeneration",
-    "LlavaNextVideoForConditionalGeneration",
-    "LlavaOnevisionForConditionalGeneration",
-    "MantisForConditionalGeneration",
-    "MiDashengLMModel",
-    "MiniCPMO",
-    "MiniCPMV",
-    "MiniCPMVBaseModel",
-    "MiniMaxVL01ForConditionalGeneration",
-    "Mistral3ForConditionalGeneration",
-    "MolmoForCausalLM",
-    "MultiModalMixin",
-    "NemotronH_Nano_VL_V2",
-    "NVLM_D_Model",
-    "Ovis",
-    "Ovis2_5",
-    "PaddleOCRVLForConditionalGeneration",
-    "PaliGemmaForConditionalGeneration",
-    "Phi3VForCausalLM",
-    "Phi4MMForCausalLM",
-    "Phi4MultimodalForCausalLM",
-    "PixtralForConditionalGeneration",
-    "Qwen2_5_VLForConditionalGeneration",
-    "Qwen2_5OmniThinkerForConditionalGeneration",
-    "Qwen2AudioForConditionalGeneration",
-    "Qwen2VLForConditionalGeneration",
-    "Qwen3OmniMoeThinkerForConditionalGeneration",
-    "Qwen3VLForConditionalGeneration",
-    "Qwen3VLMoeForConditionalGeneration",
-    "QwenVLForConditionalGeneration",
-    "RForConditionalGeneration",
-    "SiglipEmbeddingModel",
-    "SkyworkR1VChatModel",
-    "SmolVLMForConditionalGeneration",
-    "Step3VLForConditionalGeneration",
-    "Tarsier2ForConditionalGeneration",
-    "TarsierForConditionalGeneration",
-    "Terratorch",
-    "TransformersMultiModalForCausalLM",
-    "TransformersMultiModalMoEForCausalLM",
-    "TransformersMultiModalEmbeddingModel",
-    "TransformersMultiModalForSequenceClassification",
-    "UltravoxModel",
-    "VoxtralForConditionalGeneration",
-    "WhisperForConditionalGeneration",
-]
-
 
 class ModelArchConfigConvertorBase:
     def __init__(self, hf_config: PretrainedConfig):
@@ -303,12 +227,16 @@ class ModelArchConfigConvertorBase:
                     max_len_key = key
                 derived_max_model_len = min(derived_max_model_len, max_len)
 
+        # For Command-R / Cohere, Cohere2 / Aya Vision models
+        if tmp_max_len := getattr(self.hf_text_config, "model_max_length", None):
+            max_len_key = "model_max_length"
+            derived_max_model_len = tmp_max_len
         return derived_max_model_len, max_len_key
 
     def support_multimodal(self) -> bool:
         return any(
             multi_model_arch in self.hf_config.architectures
-            for multi_model_arch in MULTIMODAL_MODEL_ARCHS
+            for multi_model_arch in _MULTIMODAL_MODELS
         )
 
     def convert(self, model_id: str, revision: str | None) -> ModelArchitectureConfig:
@@ -439,15 +367,6 @@ class LongCatFlashMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
         return getattr(self.hf_text_config, "num_nextn_predict_layers", 1)
 
 
-class CohereModelArchConfigConvertor(ModelArchConfigConvertorBase):
-    def derive_max_model_len_and_key(self) -> tuple[float, str | None]:
-        derived_max_model_len, max_len_key = super().derive_max_model_len_and_key()
-        if tmp_max_len := getattr(self.hf_text_config, "model_max_length", None):
-            max_len_key = "model_max_length"
-            derived_max_model_len = tmp_max_len
-        return derived_max_model_len, max_len_key
-
-
 # hf_config.model_type -> convertor class
 MODEL_ARCH_CONFIG_CONVERTORS = {
     "zamba2": Zamba2ModelArchConfigConvertor,
@@ -464,6 +383,4 @@ MODEL_ARCH_CONFIG_CONVERTORS = {
     "ernie_mtp": ErnieMTPModelArchConfigConvertor,
     "pangu_ultra_moe_mtp": PanguUltraMoeMTPModelArchConfigConvertor,
     "longcat_flash_mtp": LongCatFlashMTPModelArchConfigConvertor,
-    "commandr": CohereModelArchConfigConvertor,
-    "aya_vision": CohereModelArchConfigConvertor,
 }
