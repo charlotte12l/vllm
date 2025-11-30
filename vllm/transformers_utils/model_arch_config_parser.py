@@ -233,7 +233,7 @@ class ModelArchConfigConvertorBase:
             derived_max_model_len = tmp_max_len
         return derived_max_model_len, max_len_key
 
-    def support_multimodal(self) -> bool:
+    def is_multimodal_model(self) -> bool:
         return any(
             multi_model_arch in self.hf_config.architectures
             for multi_model_arch in _MULTIMODAL_MODELS
@@ -253,7 +253,7 @@ class ModelArchConfigConvertorBase:
             num_experts=self.get_num_experts(),
             quantization_config=self.get_quantization_config(self.hf_config),
             torch_dtype=self.get_torch_dtype(self.hf_config, model_id, revision),
-            support_multimodal=self.support_multimodal(),
+            is_multimodal_model=self.is_multimodal_model(),
             is_deepseek_mla=self.is_deepseek_mla(),
             derived_max_model_len_and_key=self.derive_max_model_len_and_key(),
         )

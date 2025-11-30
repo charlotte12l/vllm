@@ -52,8 +52,8 @@ class ModelArchitectureConfig:
     torch_dtype: torch.dtype | str | None
     """PyTorch data type for model weights (e.g., 'float16', 'bfloat16')."""
 
-    support_multimodal: bool
-    """Whether the model supports multimodal input."""
+    is_multimodal_model: bool
+    """Whether the model is a multimodal model."""
 
     is_deepseek_mla: bool
     """Whether the model is a DeepSeek MLA model."""
