@@ -10,7 +10,6 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
-@dataclass
 class ModelArchitectureConfig:
     """
     Configuration for model architecture that required by vLLM runtime
@@ -46,7 +45,7 @@ class ModelArchitectureConfig:
     num_experts: int
     """Number of experts in the model."""
 
-    quantization_config: dict[str, Any]
+    quantization_config: dict[str, Any] | None
     """Quantization configuration dictionary containing quantization parameters."""
 
     torch_dtype: torch.dtype | str | None
