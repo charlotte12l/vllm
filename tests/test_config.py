@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
 import os
 from dataclasses import MISSING, Field, asdict, dataclass, field
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -579,7 +581,8 @@ def test_model_arch_config():
         "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     ] + trust_remote_code_models
 
-    with open("model_arch_groundtruth.json", "r") as f:
+    groundtruth_path = Path(__file__).parent / "test_files" / "model_arch_groundtruth.json"
+    with open(groundtruth_path, "r") as f:
         model_arch_groundtruth = json.load(f)
     
     for model in models_to_test:
