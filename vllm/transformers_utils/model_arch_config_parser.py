@@ -318,7 +318,7 @@ class ModelArchConfigConvertorBase:
             model_type=self.hf_config.model_type,
             text_model_type=getattr(self.hf_text_config, "model_type", None),
             hidden_size=self.get_hidden_size(),
-            num_hidden_layers=self.get_num_hidden_layers(),
+            total_num_hidden_layers=self.get_num_hidden_layers(),
             total_num_attention_heads=self.get_total_num_attention_heads(),
             head_size=self.get_head_size(),
             vocab_size=self.get_vocab_size(),

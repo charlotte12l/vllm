@@ -29,7 +29,7 @@ class ModelArchitectureConfig:
     hidden_size: int
     """Hidden size of the model."""
 
-    num_hidden_layers: int
+    total_num_hidden_layers: int
     """Number of hidden layers in the model."""
 
     total_num_attention_heads: int

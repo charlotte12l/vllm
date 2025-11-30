@@ -1207,7 +1207,7 @@ class ModelConfig:
         return self.model_arch_config.num_experts
 
     def get_total_num_hidden_layers(self) -> int:
-        return self.model_arch_config.num_hidden_layers
+        return self.model_arch_config.total_num_hidden_layers
 
     def get_layers_start_end_indices(
         self, parallel_config: ParallelConfig

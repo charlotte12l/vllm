@@ -607,3 +607,12 @@ def test_model_arch_config():
         dtype = model_arch_config.torch_dtype
         assert str(dtype) == "bfloat16"
         assert isinstance(dtype, str) == expected["is_dtype_str"]
+
+        # Test that model_config methods return expected values
+        assert model_config.architectures == expected["architectures"]
+        assert model_config.get_vocab_size() == expected["vocab_size"]
+        assert model_config.get_hidden_size() == expected["hidden_size"]
+        assert model_config.get_head_size() == expected["head_size"]
+        assert model_config.get_total_num_kv_heads() == expected["total_num_kv_heads"]
+        assert model_config.get_num_experts() == expected["num_experts"]
+        assert model_config.get_total_num_hidden_layers() == expected["total_num_hidden_layers"]
