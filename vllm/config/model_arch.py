@@ -3,6 +3,7 @@
 from typing import Any
 
 import torch
+from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
 from vllm.logger import init_logger
@@ -10,6 +11,7 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class ModelArchitectureConfig:
     """
     Configuration for model architecture that required by vLLM runtime
