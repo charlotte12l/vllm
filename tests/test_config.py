@@ -579,7 +579,6 @@ def test_model_arch_config():
         "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     ] + trust_remote_code_models
 
-    model_arch_config = model_config.model_arch_config
     with open("model_arch_groundtruth.json", "r") as f:
         model_arch_groundtruth = json.load(f)
     
@@ -587,6 +586,7 @@ def test_model_arch_config():
         print(f"testing {model=}")
         model_config = ModelConfig(model, trust_remote_code=model in trust_remote_code_models)
         
+        model_arch_config = model_config.model_arch_config
         expected = model_arch_groundtruth[model]
         assert model_arch_config.architectures == expected["architectures"]
         assert model_arch_config.model_type == expected["model_type"]
