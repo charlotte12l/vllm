@@ -96,6 +96,7 @@ MULTIMODAL_MODEL_ARCHS = [
     "WhisperForConditionalGeneration",
 ]
 
+
 class ModelArchConfigConvertorBase:
     def __init__(self, hf_config: PretrainedConfig):
         self.hf_config = hf_config

@@ -560,7 +560,8 @@ def test_model_arch_config():
     trust_remote_code_models = [
         "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
         "XiaomiMiMo/MiMo-7B-RL",
-        # "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1", # is not available online right now
+        # Not available online right now
+        # "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1",
         "meituan-longcat/LongCat-Flash-Chat",
     ]
     models_to_test = [
@@ -581,22 +582,32 @@ def test_model_arch_config():
         "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     ] + trust_remote_code_models
 
-    groundtruth_path = Path(__file__).parent / "test_files" / "model_arch_groundtruth.json"
-    with open(groundtruth_path, "r") as f:
+    groundtruth_path = (
+        Path(__file__).parent / "test_files" / "model_arch_groundtruth.json"
+    )
+    with open(groundtruth_path) as f:
         model_arch_groundtruth = json.load(f)
-    
+
     for model in models_to_test:
         print(f"testing {model=}")
-        model_config = ModelConfig(model, trust_remote_code=model in trust_remote_code_models)
-        
+        model_config = ModelConfig(
+            model, trust_remote_code=model in trust_remote_code_models
+        )
+
         model_arch_config = model_config.model_arch_config
         expected = model_arch_groundtruth[model]
         assert model_arch_config.architectures == expected["architectures"]
         assert model_arch_config.model_type == expected["model_type"]
         assert model_arch_config.text_model_type == expected["text_model_type"]
         assert model_arch_config.hidden_size == expected["hidden_size"]
-        assert model_arch_config.total_num_hidden_layers == expected["total_num_hidden_layers"]
-        assert model_arch_config.total_num_attention_heads == expected["total_num_attention_heads"]
+        assert (
+            model_arch_config.total_num_hidden_layers
+            == expected["total_num_hidden_layers"]
+        )
+        assert (
+            model_arch_config.total_num_attention_heads
+            == expected["total_num_attention_heads"]
+        )
         assert model_arch_config.head_size == expected["head_size"]
         assert model_arch_config.vocab_size == expected["vocab_size"]
         assert model_arch_config.total_num_kv_heads == expected["total_num_kv_heads"]
@@ -615,4 +626,7 @@ def test_model_arch_config():
         assert model_config.get_head_size() == expected["head_size"]
         assert model_config.get_total_num_kv_heads() == expected["total_num_kv_heads"]
         assert model_config.get_num_experts() == expected["num_experts"]
-        assert model_config.get_total_num_hidden_layers() == expected["total_num_hidden_layers"]
+        assert (
+            model_config.get_total_num_hidden_layers()
+            == expected["total_num_hidden_layers"]
+        )
