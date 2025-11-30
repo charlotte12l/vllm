@@ -679,6 +679,8 @@ def test_model_arch_config():
             model_config.get_total_num_hidden_layers()
             == expected["total_num_hidden_layers"]
         )
+
+
 @pytest.mark.parametrize(
     ("model_id", "expected_attn_type", "expected_result", "reason"),
     [

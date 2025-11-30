@@ -13,10 +13,10 @@ from pydantic.dataclasses import dataclass
 from transformers.configuration_utils import ALLOWED_LAYER_TYPES
 
 import vllm.envs as envs
+from vllm.attention.backends.registry import AttentionBackendEnum
 from vllm.config.model_arch import (
     ModelArchitectureConfig,
 )
-from vllm.attention.backends.registry import AttentionBackendEnum
 from vllm.config.multimodal import MMCacheType, MMEncoderTPMode, MultiModalConfig
 from vllm.config.pooler import PoolerConfig
 from vllm.config.scheduler import RunnerType
