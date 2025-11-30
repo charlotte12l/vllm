@@ -605,7 +605,7 @@ def test_model_arch_config():
         assert model_arch_config.is_multimodal_model == expected["is_multimodal_model"]
 
         dtype = model_arch_config.torch_dtype
-        assert str(dtype) == "bfloat16"
+        assert str(dtype) == expected["dtype"]
         assert isinstance(dtype, str) == expected["is_dtype_str"]
 
         # Test that model_config methods return expected values
