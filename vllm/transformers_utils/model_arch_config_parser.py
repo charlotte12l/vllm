@@ -116,7 +116,7 @@ class ModelArchConfigConvertorBase:
     def get_head_size(self) -> int:
         if self.is_deepseek_mla():
             qk_rope_head_dim = getattr(self.hf_text_config, "qk_rope_head_dim", 0)
-            if envs.VLLM_MLA_DISABLE:
+            if not envs.VLLM_MLA_DISABLE:
                 return self.hf_text_config.kv_lora_rank + qk_rope_head_dim
             else:
                 qk_nope_head_dim = getattr(self.hf_text_config, "qk_nope_head_dim", 0)
