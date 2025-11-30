@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from typing import TYPE_CHECKING
 
 import torch
 from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
@@ -16,85 +17,18 @@ from vllm.transformers_utils.config import (
     get_hf_text_config,
     try_get_safetensors_metadata,
 )
+from vllm.utils.import_utils import LazyLoader
 from vllm.utils.torch_utils import common_broadcastable_dtype
 
-logger = init_logger(__name__)
+if TYPE_CHECKING:
+    import vllm.model_executor.models.registry as me_models_registry
+else:
+    # Use lazy loading to avoid circular import
+    me_models_registry = LazyLoader(
+        "model_executor", globals(), "vllm.model_executor.models.registry"
+    )
 
-# List of multimodal model architectures
-# Keep in sync with _MULTIMODAL_MODELS in vllm/model_executor/models/registry.py
-MULTIMODAL_MODEL_ARCHS = [
-    "AriaForConditionalGeneration",
-    "AyaVisionForConditionalGeneration",
-    "BeeForConditionalGeneration",
-    "Blip2ForConditionalGeneration",
-    "ChameleonForConditionalGeneration",
-    "CLIPEmbeddingModel",
-    "Cohere2VisionForConditionalGeneration",
-    "DeepseekOCRForCausalLM",
-    "DeepseekVLV2ForCausalLM",
-    "DotsOCRForCausalLM",
-    "Ernie4_5_VLMoeForConditionalGeneration",
-    "FuyuForCausalLM",
-    "Gemma3ForConditionalGeneration",
-    "Gemma3nForConditionalGeneration",
-    "GLM4VForCausalLM",
-    "Glm4vForConditionalGeneration",
-    "Glm4vMoeForConditionalGeneration",
-    "GraniteSpeechForConditionalGeneration",
-    "H2OVLChatModel",
-    "HunYuanVLForConditionalGeneration",
-    "Idefics3ForConditionalGeneration",
-    "InternS1ForConditionalGeneration",
-    "InternVLChatModel",
-    "InternVLForConditionalGeneration",
-    "KeyeForConditionalGeneration",
-    "KeyeVL1_5ForConditionalGeneration",
-    "KimiVLForConditionalGeneration",
-    "LightOnOCRForConditionalGeneration",
-    "Llama_Nemotron_Nano_VL",
-    "Llama4ForConditionalGeneration",
-    "LlavaForConditionalGeneration",
-    "LlavaNextForConditionalGeneration",
-    "LlavaNextVideoForConditionalGeneration",
-    "LlavaOnevisionForConditionalGeneration",
-    "MantisForConditionalGeneration",
-    "MiDashengLMModel",
-    "MiniCPMO",
-    "MiniCPMV",
-    "MiniMaxVL01ForConditionalGeneration",
-    "Mistral3ForConditionalGeneration",
-    "MolmoForCausalLM",
-    "NemotronH_Nano_VL_V2",
-    "NVLM_D",
-    "OpenCUAForConditionalGeneration",
-    "Ovis",
-    "Ovis2_5",
-    "PaddleOCRVLForConditionalGeneration",
-    "PaliGemmaForConditionalGeneration",
-    "Phi3VForCausalLM",
-    "Phi4MMForCausalLM",
-    "Phi4MultimodalForCausalLM",
-    "PixtralForConditionalGeneration",
-    "Qwen2_5_VLForConditionalGeneration",
-    "Qwen2_5OmniForConditionalGeneration",
-    "Qwen2_5OmniModel",
-    "Qwen2AudioForConditionalGeneration",
-    "Qwen2VLForConditionalGeneration",
-    "Qwen3OmniMoeForConditionalGeneration",
-    "Qwen3VLForConditionalGeneration",
-    "Qwen3VLMoeForConditionalGeneration",
-    "QwenVLForConditionalGeneration",
-    "RForConditionalGeneration",
-    "SiglipEmbeddingModel",
-    "SkyworkR1VChatModel",
-    "SmolVLMForConditionalGeneration",
-    "Step3VLForConditionalGeneration",
-    "Tarsier2ForConditionalGeneration",
-    "TarsierForConditionalGeneration",
-    "UltravoxModel",
-    "VoxtralForConditionalGeneration",
-    "WhisperForConditionalGeneration",
-]
+logger = init_logger(__name__)
 
 
 class ModelArchConfigConvertorBase:
@@ -310,7 +244,7 @@ class ModelArchConfigConvertorBase:
     def is_multimodal_model(self) -> bool:
         return any(
             multi_model_arch in self.hf_config.architectures
-            for multi_model_arch in MULTIMODAL_MODEL_ARCHS
+            for multi_model_arch in me_models_registry._MULTIMODAL_MODELS
         )
 
     def convert(self, model_id: str, revision: str | None) -> ModelArchitectureConfig:
