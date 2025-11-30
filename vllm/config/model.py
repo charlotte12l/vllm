@@ -966,6 +966,7 @@ class ModelConfig:
         quant_cfg = ModelArchConfigConvertorBase.get_quantization_config(self.hf_config)
 
         if quant_cfg is not None:
+            quant_method = quant_cfg["quant_method"] 
             # Quantization methods which are overrides (i.e. they have a
             # `override_quantization_method` method) must be checked in order
             # of preference (this is particularly important for GPTQ).
