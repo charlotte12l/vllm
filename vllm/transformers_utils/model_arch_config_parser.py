@@ -20,6 +20,8 @@ from vllm.utils.torch_utils import common_broadcastable_dtype
 
 logger = init_logger(__name__)
 
+# List of multimodal model architectures
+# Keep in sync with _MULTIMODAL_MODELS in vllm/model_executor/models/registry.py
 MULTIMODAL_MODEL_ARCHS = [
     "AriaForConditionalGeneration",
     "AyaVisionForConditionalGeneration",
@@ -40,16 +42,17 @@ MULTIMODAL_MODEL_ARCHS = [
     "Glm4vMoeForConditionalGeneration",
     "GraniteSpeechForConditionalGeneration",
     "H2OVLChatModel",
-    "HCXVisionForCausalLM",
+    "HunYuanVLForConditionalGeneration",
     "Idefics3ForConditionalGeneration",
     "InternS1ForConditionalGeneration",
     "InternVLChatModel",
+    "InternVLForConditionalGeneration",
     "KeyeForConditionalGeneration",
     "KeyeVL1_5ForConditionalGeneration",
     "KimiVLForConditionalGeneration",
     "LightOnOCRForConditionalGeneration",
+    "Llama_Nemotron_Nano_VL",
     "Llama4ForConditionalGeneration",
-    "LlamaNemotronVLChatModel",
     "LlavaForConditionalGeneration",
     "LlavaNextForConditionalGeneration",
     "LlavaNextVideoForConditionalGeneration",
@@ -58,13 +61,12 @@ MULTIMODAL_MODEL_ARCHS = [
     "MiDashengLMModel",
     "MiniCPMO",
     "MiniCPMV",
-    "MiniCPMVBaseModel",
     "MiniMaxVL01ForConditionalGeneration",
     "Mistral3ForConditionalGeneration",
     "MolmoForCausalLM",
-    "MultiModalMixin",
     "NemotronH_Nano_VL_V2",
-    "NVLM_D_Model",
+    "NVLM_D",
+    "OpenCUAForConditionalGeneration",
     "Ovis",
     "Ovis2_5",
     "PaddleOCRVLForConditionalGeneration",
@@ -74,10 +76,11 @@ MULTIMODAL_MODEL_ARCHS = [
     "Phi4MultimodalForCausalLM",
     "PixtralForConditionalGeneration",
     "Qwen2_5_VLForConditionalGeneration",
-    "Qwen2_5OmniThinkerForConditionalGeneration",
+    "Qwen2_5OmniForConditionalGeneration",
+    "Qwen2_5OmniModel",
     "Qwen2AudioForConditionalGeneration",
     "Qwen2VLForConditionalGeneration",
-    "Qwen3OmniMoeThinkerForConditionalGeneration",
+    "Qwen3OmniMoeForConditionalGeneration",
     "Qwen3VLForConditionalGeneration",
     "Qwen3VLMoeForConditionalGeneration",
     "QwenVLForConditionalGeneration",
@@ -88,11 +91,6 @@ MULTIMODAL_MODEL_ARCHS = [
     "Step3VLForConditionalGeneration",
     "Tarsier2ForConditionalGeneration",
     "TarsierForConditionalGeneration",
-    "Terratorch",
-    "TransformersMultiModalForCausalLM",
-    "TransformersMultiModalMoEForCausalLM",
-    "TransformersMultiModalEmbeddingModel",
-    "TransformersMultiModalForSequenceClassification",
     "UltravoxModel",
     "VoxtralForConditionalGeneration",
     "WhisperForConditionalGeneration",
@@ -119,7 +117,7 @@ class ModelArchConfigConvertorBase:
     def get_head_size(self) -> int:
         if self.is_deepseek_mla():
             qk_rope_head_dim = getattr(self.hf_text_config, "qk_rope_head_dim", 0)
-            if envs.VLLM_MLA_DISABLE:
+            if not envs.VLLM_MLA_DISABLE:
                 return self.hf_text_config.kv_lora_rank + qk_rope_head_dim
             else:
                 qk_nope_head_dim = getattr(self.hf_text_config, "qk_nope_head_dim", 0)
@@ -303,9 +301,13 @@ class ModelArchConfigConvertorBase:
                     max_len_key = key
                 derived_max_model_len = min(derived_max_model_len, max_len)
 
+        # For Command-R / Cohere, Cohere2 / Aya Vision models
+        if tmp_max_len := getattr(self.hf_text_config, "model_max_length", None):
+            max_len_key = "model_max_length"
+            derived_max_model_len = tmp_max_len
         return derived_max_model_len, max_len_key
 
-    def support_multimodal(self) -> bool:
+    def is_multimodal_model(self) -> bool:
         return any(
             multi_model_arch in self.hf_config.architectures
             for multi_model_arch in MULTIMODAL_MODEL_ARCHS
@@ -317,7 +319,7 @@ class ModelArchConfigConvertorBase:
             model_type=self.hf_config.model_type,
             text_model_type=getattr(self.hf_text_config, "model_type", None),
             hidden_size=self.get_hidden_size(),
-            num_hidden_layers=self.get_num_hidden_layers(),
+            total_num_hidden_layers=self.get_num_hidden_layers(),
             total_num_attention_heads=self.get_total_num_attention_heads(),
             head_size=self.get_head_size(),
             vocab_size=self.get_vocab_size(),
@@ -325,7 +327,7 @@ class ModelArchConfigConvertorBase:
             num_experts=self.get_num_experts(),
             quantization_config=self.get_quantization_config(self.hf_config),
             torch_dtype=self.get_torch_dtype(self.hf_config, model_id, revision),
-            support_multimodal=self.support_multimodal(),
+            is_multimodal_model=self.is_multimodal_model(),
             is_deepseek_mla=self.is_deepseek_mla(),
             derived_max_model_len_and_key=self.derive_max_model_len_and_key(),
         )
@@ -439,15 +441,6 @@ class LongCatFlashMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
         return getattr(self.hf_text_config, "num_nextn_predict_layers", 1)
 
 
-class CohereModelArchConfigConvertor(ModelArchConfigConvertorBase):
-    def derive_max_model_len_and_key(self) -> tuple[float, str | None]:
-        derived_max_model_len, max_len_key = super().derive_max_model_len_and_key()
-        if tmp_max_len := getattr(self.hf_text_config, "model_max_length", None):
-            max_len_key = "model_max_length"
-            derived_max_model_len = tmp_max_len
-        return derived_max_model_len, max_len_key
-
-
 # hf_config.model_type -> convertor class
 MODEL_ARCH_CONFIG_CONVERTORS = {
     "zamba2": Zamba2ModelArchConfigConvertor,
@@ -464,6 +457,4 @@ MODEL_ARCH_CONFIG_CONVERTORS = {
     "ernie_mtp": ErnieMTPModelArchConfigConvertor,
     "pangu_ultra_moe_mtp": PanguUltraMoeMTPModelArchConfigConvertor,
     "longcat_flash_mtp": LongCatFlashMTPModelArchConfigConvertor,
-    "commandr": CohereModelArchConfigConvertor,
-    "aya_vision": CohereModelArchConfigConvertor,
 }

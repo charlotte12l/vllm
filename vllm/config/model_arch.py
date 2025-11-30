@@ -3,6 +3,7 @@
 from typing import Any
 
 import torch
+from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
 from vllm.logger import init_logger
@@ -10,7 +11,7 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 
-@dataclass
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class ModelArchitectureConfig:
     """
     Configuration for model architecture that required by vLLM runtime
@@ -28,7 +29,7 @@ class ModelArchitectureConfig:
     hidden_size: int
     """Hidden size of the model."""
 
-    num_hidden_layers: int
+    total_num_hidden_layers: int
     """Number of hidden layers in the model."""
 
     total_num_attention_heads: int
@@ -46,14 +47,14 @@ class ModelArchitectureConfig:
     num_experts: int
     """Number of experts in the model."""
 
-    quantization_config: dict[str, Any]
+    quantization_config: dict[str, Any] | None
     """Quantization configuration dictionary containing quantization parameters."""
 
     torch_dtype: torch.dtype | str | None
     """PyTorch data type for model weights (e.g., 'float16', 'bfloat16')."""
 
-    support_multimodal: bool
-    """Whether the model supports multimodal input."""
+    is_multimodal_model: bool
+    """Whether the model is a multimodal model."""
 
     is_deepseek_mla: bool
     """Whether the model is a DeepSeek MLA model."""

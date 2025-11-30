@@ -966,6 +966,7 @@ class ModelConfig:
         quant_cfg = ModelArchConfigConvertorBase.get_quantization_config(self.hf_config)
 
         if quant_cfg is not None:
+            quant_method = quant_cfg["quant_method"]
             # Quantization methods which are overrides (i.e. they have a
             # `override_quantization_method` method) must be checked in order
             # of preference (this is particularly important for GPTQ).
@@ -1207,12 +1208,13 @@ class ModelConfig:
         return self.model_arch_config.num_experts
 
     def get_total_num_hidden_layers(self) -> int:
-        return self.model_arch_config.num_hidden_layers
+        return self.model_arch_config.total_num_hidden_layers
 
     def get_layers_start_end_indices(
         self, parallel_config: ParallelConfig
     ) -> tuple[int, int]:
         from vllm.distributed.utils import get_pp_indices
+
         total_num_hidden_layers = self.get_total_num_hidden_layers()
 
         # the layout order is: DP x PP x TP
