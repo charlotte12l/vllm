@@ -40,7 +40,7 @@ from vllm.transformers_utils.config import (
 from vllm.transformers_utils.gguf_utils import (
     maybe_patch_hf_config_from_gguf,
 )
-from vllm.transformers_utils.model_arch_config_parser import (
+from vllm.transformers_utils.model_arch_config_convertor import (
     MODEL_ARCH_CONFIG_CONVERTORS,
     ModelArchConfigConvertorBase,
 )
