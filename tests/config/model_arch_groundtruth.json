@@ -15,7 +15,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "mosaicml/mpt-7b": {
         "architectures": [
@@ -33,7 +33,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "databricks/dbrx-instruct": {
         "architectures": [
@@ -51,7 +51,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "tiiuae/falcon-7b": {
         "architectures": [
@@ -69,7 +69,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "tiiuae/falcon-40b": {
         "architectures": [
@@ -87,7 +87,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "luccafong/deepseek_mtp_main_random": {
         "architectures": [
@@ -105,7 +105,7 @@
         "is_deepseek_mla": true,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "luccafong/deepseek_mtp_draft_random": {
         "architectures": [
@@ -123,7 +123,7 @@
         "is_deepseek_mla": true,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "Qwen/Qwen3-Next-80B-A3B-Instruct": {
         "architectures": [
@@ -141,7 +141,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "tiny-random/qwen3-next-moe": {
         "architectures": [
@@ -159,7 +159,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "zai-org/GLM-4.5": {
         "architectures": [
@@ -177,7 +177,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "baidu/ERNIE-4.5-21B-A3B-PT": {
         "architectures": [
@@ -195,7 +195,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "lmsys/gpt-oss-20b-bf16": {
         "architectures": [
@@ -213,7 +213,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "deepseek-ai/DeepSeek-V3.2-Exp": {
         "architectures": [
@@ -231,7 +231,7 @@
         "is_deepseek_mla": true,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "meta-llama/Llama-4-Scout-17B-16E-Instruct": {
         "architectures": [
@@ -249,7 +249,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": true,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1": {
         "architectures": [
@@ -267,7 +267,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "XiaomiMiMo/MiMo-7B-RL": {
         "architectures": [
@@ -285,7 +285,7 @@
         "is_deepseek_mla": false,
         "is_multimodal_model": false,
         "dtype": "torch.bfloat16",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     },
     "meituan-longcat/LongCat-Flash-Chat": {
         "architectures": [
@@ -303,6 +303,6 @@
         "is_deepseek_mla": true,
         "is_multimodal_model": false,
         "dtype": "torch.float32",
-        "is_dtype_str": false
+        "dtype_original_type": "torch.dtype"
     }
 }
