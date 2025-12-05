@@ -48,7 +48,6 @@ from vllm.transformers_utils.model_arch_config_convertor import (
     ModelArchConfigConvertorBase,
 )
 from vllm.transformers_utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
-from vllm.transformers_utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
 from vllm.transformers_utils.utils import maybe_model_redirect
 from vllm.utils.import_utils import LazyLoader
 
