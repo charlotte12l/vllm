@@ -23,9 +23,6 @@ class ModelArchitectureConfig:
     model_type: str
     """Model type identifier (e.g., 'llama', 'gpt_oss')."""
 
-    text_model_type: str | None
-    """Text model type identifier (e.g., 'llama4_text')."""
-
     hidden_size: int
     """Hidden size of the model."""
 
@@ -60,3 +57,46 @@ class ModelArchitectureConfig:
     """Derived maximum model length and key from the hf config."""
 
     attention_chunk_size: int | None
+
+    dual_chunk_attention_config: dict[str, Any] | None
+
+    block_configs: list[str] | None
+
+    layers_block_type: str | None
+
+    attn_type_list: list[str] | None
+
+    layer_types: list[str] | None
+
+    is_encoder_decoder: bool
+
+    uses_mrope: bool
+    uses_xdrope_dim: bool
+    is_matryoshka: bool
+    matryoshka_dimensions: list[int] | None
+    use_pad_token: bool
+    head_dtype: torch.dtype | str | None
+    position_embedding_type: str | None
+    is_causal: bool
+    rope_parameters: dict[str, Any] | None
+    original_max_position_embeddings: int
+    model_max_length: int
+
+    # "projection_dim", "projection_size"
+    text_sliding_window: int | None
+
+    mamba_chunk_size: int | None
+    # if hf_value := hf_config.get_text_config().max_position_embeddings:
+    # config_plugin = hf_config.get("io_processor_plugin")
+    # hf_config.id2label
+    # "decoder_start_token_id",
+    # odel_config.hf_config, "index_topk")
+    # hf_config, "num_labels", 0) != 1
+    # getattr(self.draft_model_config.hf_config, "eagle_config", None)
+    #  = hf_config.image_token_index, "eagle_aux_hidden_state_layer_ids", "id2label",
+
+    # In tests:
+    # hf_config.vision_config.hidden_size =
+    # image_size = hf_config.vision_config.image_size
+    # patch_size = hf_config.vision_config.patch_size
+    #     round(1.0 / (hf_config.vision_config.pixel_shuffle_ratio**2))

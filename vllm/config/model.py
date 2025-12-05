@@ -1081,7 +1081,7 @@ class ModelConfig:
         self,
         load_config: LoadConfig,
     ) -> None:
-        if hasattr(self.hf_config, "dual_chunk_attention_config"):
+        if self.model_arch_config.dual_chunk_attention_config:
             # Try loading the sparse attention config
             from vllm.model_executor.model_loader.weight_utils import (
                 get_sparse_attention_config,
@@ -1089,14 +1089,14 @@ class ModelConfig:
 
             sparse_attn_config = get_sparse_attention_config(self, load_config)
             if sparse_attn_config:
-                self.hf_config.dual_chunk_attention_config[
+                self.model_arch_config.dual_chunk_attention_config[
                     "sparse_attention_config"
                 ] = sparse_attn_config
                 if (
                     "sparse_attention_enabled"
-                    not in self.hf_config.dual_chunk_attention_config
+                    not in self.model_arch_config.dual_chunk_attention_config
                 ):
-                    self.hf_config.dual_chunk_attention_config[
+                    self.model_arch_config.dual_chunk_attention_config[
                         "sparse_attention_enabled"
                     ] = True
 
@@ -1258,15 +1258,13 @@ class ModelConfig:
             # is only one type of attention-free block type.
             return 0 if attn_block_type else end - start
         elif self.has_noops:
-            block_configs = self.hf_config.block_configs
+            block_configs = none_throws(self.model_arch_config.block_configs)
             return sum(not bc.attention.no_op for bc in block_configs[start:end])
         else:
             # Hybrid model Jamba
-            layers_block_type_value = getattr(
-                self.hf_text_config, "layers_block_type", None
-            )
+            layers_block_type_value = self.model_arch_config.layers_block_type
             if layers_block_type_value is not None:
-                if self.model_arch_config.text_model_type == "zamba2":
+                if self.model_arch_config.model_type == "zamba2":
                     if attn_block_type:
                         return sum(
                             t == "hybrid" for t in layers_block_type_value[start:end]
@@ -1276,12 +1274,12 @@ class ModelConfig:
                 return sum(t == block_type for t in layers_block_type_value[start:end])
 
             # Hybrid model Minimax
-            attn_type_list = getattr(self.hf_config, "attn_type_list", None)
+            attn_type_list = self.model_arch_config.attn_type_list
             if attn_type_list:
                 return sum(t == 1 for t in attn_type_list[start:end])
 
             # Hybrid model Qwen3Next
-            layer_types_value = getattr(self.hf_config, "layer_types", None)
+            layer_types_value = self.model_arch_config.layer_types
             if layer_types_value is not None:
                 if block_type == "attention":
                     return sum(
@@ -1301,7 +1299,7 @@ class ModelConfig:
             ):
                 raise ValueError(
                     "The model is an hybrid without a layers_block_type or an "
-                    "attn_type_list, or a layer_types in the hf_config, "
+                    "attn_type_list, or a layer_types in the model_arch_config, "
                     f"cannot determine the num of {block_type} layers"
                 )
 
@@ -1480,7 +1478,7 @@ class ModelConfig:
     def is_hybrid(self) -> bool:
         # Handle granite-4.0-micro case which uses hybrid config but does not
         # actually contain any non-attention layers.
-        layer_types = getattr(self.hf_config, "layer_types", None)
+        layer_types = self.model_arch_config.layer_types
         if layer_types is not None and all(
             layer == "attention" for layer in layer_types
         ):
@@ -1703,7 +1701,7 @@ class ModelConfig:
         return self.get_num_experts() > 1
 
     def is_quantized(self) -> bool:
-        return getattr(self.hf_config, "quantization_config", None) is not None
+        return self.model_arch_config.quantization_config is not None
 
 
 def get_served_model_name(model: str, served_model_name: str | list[str] | None):
