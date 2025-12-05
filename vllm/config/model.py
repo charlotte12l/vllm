@@ -501,9 +501,6 @@ class ModelConfig:
         if dict_overrides:
             self._apply_dict_overrides(hf_config, dict_overrides)
         self.hf_text_config = get_hf_text_config(self.hf_config)
-        self.attention_chunk_size = getattr(
-            self.hf_text_config, "attention_chunk_size", None
-        )
         self.encoder_config = self._get_encoder_config()
         self.hf_image_processor_config = get_hf_image_processor_config(
             self.model, hf_token=self.hf_token, revision=self.revision
@@ -1850,16 +1847,14 @@ def _resolve_auto_dtype(
 
 def _get_and_verify_dtype(
     model_id: str,
-    config: PretrainedConfig,
+    model_arch_config: ModelArchitectureConfig,
     dtype: str | torch.dtype,
     *,
     is_pooling_model: bool,
     revision: str | None = None,
 ) -> torch.dtype:
-    config_dtype = ModelArchConfigConvertorBase.get_torch_dtype(
-        config, model_id, revision=revision
-    )
-    model_type = config.model_type
+    config_dtype = model_arch_config.torch_dtype
+    model_type = model_arch_config.model_type
 
     if isinstance(dtype, str):
         dtype = dtype.lower()

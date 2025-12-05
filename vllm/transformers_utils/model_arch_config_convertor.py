@@ -255,6 +255,9 @@ class ModelArchConfigConvertorBase:
             torch_dtype=self.get_torch_dtype(self.hf_config, model_id, revision),
             is_deepseek_mla=self.is_deepseek_mla(),
             derived_max_model_len_and_key=self.derive_max_model_len_and_key(),
+            attention_chunk_size=getattr(
+                self.hf_text_config, "attention_chunk_size", None
+            ),
         )
 
         return model_arch_config
