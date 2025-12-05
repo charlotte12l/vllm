@@ -505,7 +505,9 @@ class ModelConfig:
         self.hf_image_processor_config = get_hf_image_processor_config(
             self.model, hf_token=self.hf_token, revision=self.revision
         )
-        self.model_arch_config = self.get_model_arch_config()
+        self.model_arch_config = self.get_model_arch_config(
+            self.hf_config, self.model, self.revision
+        )
 
         architectures = self.architectures
         registry = self.registry
@@ -647,11 +649,9 @@ class ModelConfig:
                 self.pooler_config.pooling_type = default_pooling_type
 
         self.dtype: torch.dtype = _get_and_verify_dtype(
-            self.model,
-            self.hf_config,
+            self.model_arch_config,
             self.dtype,
             is_pooling_model=self.runner_type == "pooling",
-            revision=self.revision,
         )
 
         self.original_max_model_len = self.max_model_len
@@ -709,12 +709,15 @@ class ModelConfig:
         self._verify_cuda_graph()
         self._verify_bnb_config()
 
-    def get_model_arch_config(self) -> ModelArchitectureConfig:
+    @classmethod
+    def get_model_arch_config(
+        cls, hf_config: PretrainedConfig, model_id: str, revision: str | None = None
+    ) -> ModelArchitectureConfig:
         convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
-            self.hf_config.model_type, ModelArchConfigConvertorBase
+            hf_config.model_type, ModelArchConfigConvertorBase
         )
-        convertor = convertor_cls(self.hf_config)
-        return convertor.convert(self.model, self.revision)
+        convertor = convertor_cls(hf_config)
+        return convertor.convert(model_id, revision)
 
     @field_validator("tokenizer_mode", mode="after")
     def _lowercase_tokenizer_mode(cls, tokenizer_mode: str) -> str:
@@ -1846,12 +1849,9 @@ def _resolve_auto_dtype(
 
 
 def _get_and_verify_dtype(
-    model_id: str,
     model_arch_config: ModelArchitectureConfig,
     dtype: str | torch.dtype,
-    *,
     is_pooling_model: bool,
-    revision: str | None = None,
 ) -> torch.dtype:
     config_dtype = model_arch_config.torch_dtype
     model_type = model_arch_config.model_type
