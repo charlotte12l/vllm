@@ -249,7 +249,7 @@ class ModelArchConfigConvertorBase:
 
     def convert(self, model_id: str, revision: str | None) -> ModelArchitectureConfig:
         model_arch_config = ModelArchitectureConfig(
-            architectures=self.hf_config.architectures,
+            architectures=getattr(self.hf_config, "architectures", []),
             model_type=self.hf_config.model_type,
             text_model_type=getattr(self.hf_text_config, "model_type", None),
             hidden_size=self.get_hidden_size(),
@@ -274,22 +274,6 @@ class Zamba2ModelArchConfigConvertor(ModelArchConfigConvertorBase):
         return getattr(self.hf_text_config, "attention_head_dim", 0)
 
 
-class MPTModelArchConfigConvertor(ModelArchConfigConvertorBase):
-    def get_total_num_kv_heads(self) -> int:
-        if "kv_n_heads" in self.hf_text_config.attn_config:
-            return self.hf_text_config.attn_config["kv_n_heads"]
-        return self.hf_text_config.num_attention_heads
-
-
-class DbrxModelArchConfigConvertor(ModelArchConfigConvertorBase):
-    def get_total_num_kv_heads(self) -> int:
-        return getattr(
-            self.hf_text_config.attn_config,
-            "kv_n_heads",
-            self.hf_text_config.num_attention_heads,
-        )
-
-
 class FalconModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_total_num_kv_heads(self) -> int:
         # NOTE: for falcon, when new_decoder_architecture is True, the
@@ -309,6 +293,22 @@ class FalconModelArchConfigConvertor(ModelArchConfigConvertorBase):
         return super().get_total_num_kv_heads()
 
 
+class MPTModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    def get_total_num_kv_heads(self) -> int:
+        if "kv_n_heads" in self.hf_text_config.attn_config:
+            return self.hf_text_config.attn_config["kv_n_heads"]
+        return self.hf_text_config.num_attention_heads
+
+
+class DbrxModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    def get_total_num_kv_heads(self) -> int:
+        return getattr(
+            self.hf_text_config.attn_config,
+            "kv_n_heads",
+            self.hf_text_config.num_attention_heads,
+        )
+
+
 class NemotronNasModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_total_num_kv_heads(self) -> int:
         for block in self.hf_text_config.block_configs:
@@ -325,11 +325,6 @@ class DeepSeekMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
         return getattr(self.hf_text_config, "num_nextn_predict_layers", 0)
 
 
-class Qwen3NextMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
-    def get_num_hidden_layers(self) -> int:
-        return getattr(self.hf_text_config, "num_nextn_predict_layers", 0)
-
-
 class MimoMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_num_hidden_layers(self) -> int:
         return getattr(self.hf_text_config, "num_nextn_predict_layers", 0)
@@ -341,6 +336,11 @@ class GLM4MoeMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
 
 
 class ErnieMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    def get_num_hidden_layers(self) -> int:
+        return getattr(self.hf_text_config, "num_nextn_predict_layers", 0)
+
+
+class Qwen3NextMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_num_hidden_layers(self) -> int:
         return getattr(self.hf_text_config, "num_nextn_predict_layers", 0)
 
