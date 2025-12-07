@@ -30,12 +30,9 @@ from vllm.transformers_utils.config import (
     get_hf_text_config,
     get_pooling_config,
     get_sentence_transformer_tokenizer_config,
-    is_encoder_decoder,
     try_get_dense_modules,
     try_get_generation_config,
     try_get_tokenizer_config,
-    uses_mrope,
-    uses_xdrope_dim,
 )
 from vllm.transformers_utils.gguf_utils import (
     is_gguf,
@@ -1258,7 +1255,8 @@ class ModelConfig:
             # is only one type of attention-free block type.
             return 0 if attn_block_type else end - start
         elif self.has_noops:
-            block_configs = none_throws(self.model_arch_config.block_configs)
+            block_configs = self.model_arch_config.block_configs
+            assert block_configs is not None
             return sum(not bc.attention.no_op for bc in block_configs[start:end])
         else:
             # Hybrid model Jamba
@@ -1302,23 +1300,6 @@ class ModelConfig:
                     "attn_type_list, or a layer_types in the model_arch_config, "
                     f"cannot determine the num of {block_type} layers"
                 )
-
-    def get_mamba_chunk_size(self) -> int | None:
-        """
-        Returns the mamba chunk size if it exists
-        """
-        # used by e.g. Bamba, FalconH1, Granite, PLaMo2
-        chunk_size = getattr(self.hf_text_config, "mamba_chunk_size", None)
-        if chunk_size is None:
-            # used by e.g. Mamba2, NemotronH, Zamba
-            chunk_size = getattr(self.hf_text_config, "chunk_size", None)
-
-        # Since Mamba1 does not have a chunk notion
-        # we use a default chunk size of 1024.
-        if chunk_size is None:
-            chunk_size = 2048
-
-        return chunk_size
 
     def get_multimodal_config(self) -> MultiModalConfig:
         """
@@ -1419,7 +1400,7 @@ class ModelConfig:
     @property
     def is_encoder_decoder(self) -> bool:
         """Extract the HF encoder/decoder model flag."""
-        return is_encoder_decoder(self.hf_config)
+        return self.model_arch_config.is_encoder_decoder
 
     @property
     def uses_alibi(self) -> bool:
@@ -1446,11 +1427,11 @@ class ModelConfig:
 
     @property
     def uses_mrope(self) -> bool:
-        return uses_mrope(self.hf_config)
+        return self.model_arch_config.uses_mrope
 
     @property
     def uses_xdrope_dim(self) -> int:
-        return uses_xdrope_dim(self.hf_config)
+        return self.model_arch_config.uses_xdrope_dim
 
     @property
     def is_multimodal_model(self) -> bool:
@@ -1503,19 +1484,17 @@ class ModelConfig:
 
     @property
     def is_matryoshka(self) -> bool:
-        return bool(getattr(self.hf_config, "matryoshka_dimensions", None)) or getattr(
-            self.hf_config, "is_matryoshka", False
-        )
+        return self.model_arch_config.is_matryoshka
 
     @property
     def matryoshka_dimensions(self):
-        return getattr(self.hf_config, "matryoshka_dimensions", None)
+        return self.model_arch_config.matryoshka_dimensions
 
     @property
     def use_pad_token(self) -> bool:
         # cross_encoder models defaults to using pad_token.
         # `llm as reranker` models defaults to not using pad_token.
-        return getattr(self.hf_config, "use_pad_token", True)
+        return self.model_arch_config.use_pad_token
 
     @property
     def head_dtype(self) -> torch.dtype:
@@ -1566,7 +1545,7 @@ class ModelConfig:
         tokenizer_config = None
         if (
             self.runner_type == "pooling"
-            and getattr(self.hf_config, "position_embedding_type", "") == "absolute"
+            and self.model_arch_config.position_embedding_type == "absolute"
         ):
             tokenizer_config = try_get_tokenizer_config(
                 self.tokenizer,
@@ -1593,7 +1572,7 @@ class ModelConfig:
             if pooling_type == "cls":
                 return "encoder_only"
             else:
-                is_causal = getattr(self.hf_config, "is_causal", True)
+                is_causal = self.model_arch_config.is_causal
                 return "encoder_only" if not is_causal else self._model_info.attn_type
         elif self.is_hybrid:
             return "hybrid"

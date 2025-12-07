@@ -23,6 +23,9 @@ class ModelArchitectureConfig:
     model_type: str
     """Model type identifier (e.g., 'llama', 'gpt_oss')."""
 
+    text_model_type: str | None
+    """Text model type identifier for multimodal models."""
+
     hidden_size: int
     """Hidden size of the model."""
 
@@ -57,6 +60,7 @@ class ModelArchitectureConfig:
     """Derived maximum model length and key from the hf config."""
 
     attention_chunk_size: int | None
+    mamba_chunk_size: int | None
 
     dual_chunk_attention_config: dict[str, Any] | None
 
@@ -71,7 +75,7 @@ class ModelArchitectureConfig:
     is_encoder_decoder: bool
 
     uses_mrope: bool
-    uses_xdrope_dim: bool
+    uses_xdrope_dim: int
     is_matryoshka: bool
     matryoshka_dimensions: list[int] | None
     use_pad_token: bool
@@ -85,7 +89,6 @@ class ModelArchitectureConfig:
     # "projection_dim", "projection_size"
     text_sliding_window: int | None
 
-    mamba_chunk_size: int | None
     # if hf_value := hf_config.get_text_config().max_position_embeddings:
     # config_plugin = hf_config.get("io_processor_plugin")
     # hf_config.id2label
