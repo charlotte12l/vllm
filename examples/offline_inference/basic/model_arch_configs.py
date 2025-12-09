@@ -3,27 +3,31 @@ import json
 
 def main():
     trust_remote_code_models = [
-        "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
-        "XiaomiMiMo/MiMo-7B-RL",
-        # "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1", # is not available online right now
-        "meituan-longcat/LongCat-Flash-Chat",
+        # "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
+        # "XiaomiMiMo/MiMo-7B-RL",
+        # # "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1", # is not available online right now
+        # "meituan-longcat/LongCat-Flash-Chat",
+        # "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11",
     ]
     models_to_test = [
-        "Zyphra/Zamba2-7B-instruct",
-        "mosaicml/mpt-7b",
-        "databricks/dbrx-instruct",
-        "tiiuae/falcon-7b",
-        "tiiuae/falcon-40b",
-        "luccafong/deepseek_mtp_main_random",
-        "luccafong/deepseek_mtp_draft_random",
-        "Qwen/Qwen3-Next-80B-A3B-Instruct",
-        "tiny-random/qwen3-next-moe",
-        "zai-org/GLM-4.5",
-        "baidu/ERNIE-4.5-21B-A3B-PT",
-        # Select some models using base convertor for testing
-        "lmsys/gpt-oss-20b-bf16",
-        "deepseek-ai/DeepSeek-V3.2-Exp",
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "state-spaces/mamba-130m-hf",
+        "mistralai/Mamba-Codestral-7B-v0.1",
+        "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11",
+        # "Zyphra/Zamba2-7B-instruct",
+        # "mosaicml/mpt-7b",
+        # "databricks/dbrx-instruct",
+        # "tiiuae/falcon-7b",
+        # "tiiuae/falcon-40b",
+        # "luccafong/deepseek_mtp_main_random",
+        # "luccafong/deepseek_mtp_draft_random",
+        # "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        # "tiny-random/qwen3-next-moe",
+        # "zai-org/GLM-4.5",
+        # "baidu/ERNIE-4.5-21B-A3B-PT",
+        # # Select some models using base convertor for testing
+        # "lmsys/gpt-oss-20b-bf16",
+        # "deepseek-ai/DeepSeek-V3.2-Exp",
+        # "meta-llama/Llama-4-Scout-17B-16E-Instruct",
     ] + trust_remote_code_models
     all_res = {}
     for model in models_to_test:
@@ -47,7 +51,6 @@ def main():
         res["is_multimodal_model"] = model_config.is_multimodal_model
         dtype = _find_dtype(model, hf_config, revision=model_config.revision)
         res["dtype"] = str(dtype)
-        res["is_dtype_str"] = isinstance(dtype, str)
         all_res[model] = res
     
     with open("model_arch_groundtruth.json", "w") as f:
