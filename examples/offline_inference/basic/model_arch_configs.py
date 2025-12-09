@@ -7,12 +7,12 @@ def main():
         # "XiaomiMiMo/MiMo-7B-RL",
         # # "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1", # is not available online right now
         # "meituan-longcat/LongCat-Flash-Chat",
-        # "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11",
     ]
     models_to_test = [
         "state-spaces/mamba-130m-hf",
         "mistralai/Mamba-Codestral-7B-v0.1",
         "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11",
+        "tiiuae/falcon-mamba-7b-instruct",
         # "Zyphra/Zamba2-7B-instruct",
         # "mosaicml/mpt-7b",
         # "databricks/dbrx-instruct",
