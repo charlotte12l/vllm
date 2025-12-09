@@ -1,11 +1,16 @@
-from vllm.config.model import ModelConfig, _find_dtype
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import json
+
+from vllm.config.model import ModelConfig, _find_dtype
+
 
 def main():
     trust_remote_code_models = [
         # "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
         # "XiaomiMiMo/MiMo-7B-RL",
-        # # "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1", # is not available online right now
+        # Not available online right now
+        # # "FreedomIntelligence/openPangu-Ultra-MoE-718B-V1.1",
         # "meituan-longcat/LongCat-Flash-Chat",
     ]
     models_to_test = [
@@ -32,7 +37,9 @@ def main():
     all_res = {}
     for model in models_to_test:
         print(f"testing {model=}")
-        model_config = ModelConfig(model, trust_remote_code=model in trust_remote_code_models)
+        model_config = ModelConfig(
+            model, trust_remote_code=model in trust_remote_code_models
+        )
         res = {}
         hf_config = model_config.hf_config
         hf_text_config = model_config.hf_text_config
@@ -41,7 +48,9 @@ def main():
         res["text_model_type"] = getattr(hf_text_config, "model_type", None)
         res["hidden_size"] = model_config.get_hidden_size()
         res["total_num_hidden_layers"] = model_config.get_total_num_hidden_layers()
-        res["total_num_attention_heads"] = getattr(hf_text_config, "num_attention_heads", 0)
+        res["total_num_attention_heads"] = getattr(
+            hf_text_config, "num_attention_heads", 0
+        )
         res["head_size"] = model_config.get_head_size()
         res["vocab_size"] = model_config.get_vocab_size()
         res["total_num_kv_heads"] = model_config.get_total_num_kv_heads()
@@ -52,7 +61,7 @@ def main():
         dtype = _find_dtype(model, hf_config, revision=model_config.revision)
         res["dtype"] = str(dtype)
         all_res[model] = res
-    
+
     with open("model_arch_groundtruth.json", "w") as f:
         json.dump(all_res, f, indent=4)
 
