@@ -175,10 +175,10 @@ def main():
 
 def main_speculative():
     MODELS = [
-        # ("JackFram/llama-68m", "abhigoyal/vllm-medusa-llama-68m-random", False),
-        # ("luccafong/deepseek_mtp_main_random", "luccafong/deepseek_mtp_draft_random", True),
-        # ("eagle618/deepseek-v3-random", "eagle618/eagle-deepseek-v3-random", True),
-        # ("meta-llama/Meta-Llama-3-8B-Instruct", "yuhuili/EAGLE-LLaMA3-Instruct-8B", True),
+        ("JackFram/llama-68m", "abhigoyal/vllm-medusa-llama-68m-random", False),
+        ("luccafong/deepseek_mtp_main_random", "luccafong/deepseek_mtp_draft_random", True),
+        ("eagle618/deepseek-v3-random", "eagle618/eagle-deepseek-v3-random", True),
+        ("meta-llama/Meta-Llama-3-8B-Instruct", "yuhuili/EAGLE-LLaMA3-Instruct-8B", True),
         ("meta-llama/Llama-3.1-8B-Instruct", "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B", True),
     ]
    
@@ -213,7 +213,7 @@ def main_speculative():
         res = {}
         hf_config = model_config.hf_config
         hf_text_config = model_config.hf_text_config
-        print("lxy", hf_config, hf_text_config)
+        # print("lxy", hf_config, hf_text_config)
         res["architectures"] = model_config.architectures
         res["model_type"] = hf_config.model_type
         res["text_model_type"] = getattr(hf_text_config, "model_type", None)
