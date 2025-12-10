@@ -1,0 +1,19 @@
+{
+    "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B": {
+        "architectures": [
+            "Eagle3LlamaForCausalLM"
+        ],
+        "model_type": "eagle",
+        "text_model_type": "llama",
+        "hidden_size": 4096,
+        "total_num_hidden_layers": 1,
+        "total_num_attention_heads": 32,
+        "head_size": 128,
+        "vocab_size": 128256,
+        "total_num_kv_heads": 8,
+        "num_experts": 0,
+        "is_deepseek_mla": false,
+        "is_multimodal_model": false,
+        "dtype": "float16"
+    }
+}
