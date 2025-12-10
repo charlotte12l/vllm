@@ -50,7 +50,12 @@ from vllm import LLM, SamplingParams, envs
 from vllm.assets.audio import AudioAsset
 from vllm.assets.image import ImageAsset
 from vllm.assets.video import VideoAsset
-from vllm.config.model import ConvertOption, RunnerOption, _get_and_verify_dtype
+from vllm.config.model import (
+    ConvertOption,
+    RunnerOption,
+    ModelConfig,
+    _get_and_verify_dtype,
+)
 from vllm.connections import global_http_connection
 from vllm.distributed import (
     cleanup_dist_env_and_memory,
@@ -325,8 +330,7 @@ class HfRunner:
         )
         self.device = self.get_default_device()
         self.dtype = dtype = _get_and_verify_dtype(
-            self.model_name,
-            self.config,
+            ModelConfig.get_model_arch_config(self.config, model_name),
             dtype=dtype,
             is_pooling_model=is_sentence_transformer or is_cross_encoder,
         )

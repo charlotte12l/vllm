@@ -921,7 +921,7 @@ class VllmConfig:
                 self.scheduler_config.disable_hybrid_kv_cache_manager = True
             if (
                 self.model_config is not None
-                and self.model_config.attention_chunk_size is not None
+                and self.model_config.model_arch_config.attention_chunk_size is not None
             ):
                 if (
                     self.speculative_config is not None

@@ -30,12 +30,9 @@ from vllm.transformers_utils.config import (
     get_hf_text_config,
     get_pooling_config,
     get_sentence_transformer_tokenizer_config,
-    is_encoder_decoder,
     try_get_dense_modules,
     try_get_generation_config,
     try_get_tokenizer_config,
-    uses_mrope,
-    uses_xdrope_dim,
 )
 from vllm.transformers_utils.gguf_utils import (
     is_gguf,
@@ -501,14 +498,13 @@ class ModelConfig:
         if dict_overrides:
             self._apply_dict_overrides(hf_config, dict_overrides)
         self.hf_text_config = get_hf_text_config(self.hf_config)
-        self.attention_chunk_size = getattr(
-            self.hf_text_config, "attention_chunk_size", None
-        )
         self.encoder_config = self._get_encoder_config()
         self.hf_image_processor_config = get_hf_image_processor_config(
             self.model, hf_token=self.hf_token, revision=self.revision
         )
-        self.model_arch_config = self.get_model_arch_config()
+        self.model_arch_config = self.get_model_arch_config(
+            self.hf_config, self.model, self.revision
+        )
 
         architectures = self.architectures
         registry = self.registry
@@ -650,11 +646,9 @@ class ModelConfig:
                 self.pooler_config.pooling_type = default_pooling_type
 
         self.dtype: torch.dtype = _get_and_verify_dtype(
-            self.model,
-            self.hf_config,
+            self.model_arch_config,
             self.dtype,
             is_pooling_model=self.runner_type == "pooling",
-            revision=self.revision,
         )
 
         self.original_max_model_len = self.max_model_len
@@ -712,12 +706,15 @@ class ModelConfig:
         self._verify_cuda_graph()
         self._verify_bnb_config()
 
-    def get_model_arch_config(self) -> ModelArchitectureConfig:
+    @classmethod
+    def get_model_arch_config(
+        cls, hf_config: PretrainedConfig, model_id: str, revision: str | None = None
+    ) -> ModelArchitectureConfig:
         convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
-            self.hf_config.model_type, ModelArchConfigConvertorBase
+            hf_config.model_type, ModelArchConfigConvertorBase
         )
-        convertor = convertor_cls(self.hf_config)
-        return convertor.convert(self.model, self.revision)
+        convertor = convertor_cls(hf_config)
+        return convertor.convert(model_id, revision)
 
     @field_validator("tokenizer_mode", mode="after")
     def _lowercase_tokenizer_mode(cls, tokenizer_mode: str) -> str:
@@ -1081,7 +1078,7 @@ class ModelConfig:
         self,
         load_config: LoadConfig,
     ) -> None:
-        if hasattr(self.hf_config, "dual_chunk_attention_config"):
+        if self.model_arch_config.dual_chunk_attention_config:
             # Try loading the sparse attention config
             from vllm.model_executor.model_loader.weight_utils import (
                 get_sparse_attention_config,
@@ -1089,14 +1086,14 @@ class ModelConfig:
 
             sparse_attn_config = get_sparse_attention_config(self, load_config)
             if sparse_attn_config:
-                self.hf_config.dual_chunk_attention_config[
+                self.model_arch_config.dual_chunk_attention_config[
                     "sparse_attention_config"
                 ] = sparse_attn_config
                 if (
                     "sparse_attention_enabled"
-                    not in self.hf_config.dual_chunk_attention_config
+                    not in self.model_arch_config.dual_chunk_attention_config
                 ):
-                    self.hf_config.dual_chunk_attention_config[
+                    self.model_arch_config.dual_chunk_attention_config[
                         "sparse_attention_enabled"
                     ] = True
 
@@ -1258,15 +1255,14 @@ class ModelConfig:
             # is only one type of attention-free block type.
             return 0 if attn_block_type else end - start
         elif self.has_noops:
-            block_configs = self.hf_config.block_configs
+            block_configs = self.model_arch_config.block_configs
+            assert block_configs is not None
             return sum(not bc.attention.no_op for bc in block_configs[start:end])
         else:
             # Hybrid model Jamba
-            layers_block_type_value = getattr(
-                self.hf_text_config, "layers_block_type", None
-            )
+            layers_block_type_value = self.model_arch_config.layers_block_type
             if layers_block_type_value is not None:
-                if self.model_arch_config.text_model_type == "zamba2":
+                if self.model_arch_config.model_type == "zamba2":
                     if attn_block_type:
                         return sum(
                             t == "hybrid" for t in layers_block_type_value[start:end]
@@ -1276,12 +1272,12 @@ class ModelConfig:
                 return sum(t == block_type for t in layers_block_type_value[start:end])
 
             # Hybrid model Minimax
-            attn_type_list = getattr(self.hf_config, "attn_type_list", None)
+            attn_type_list = self.model_arch_config.attn_type_list
             if attn_type_list:
                 return sum(t == 1 for t in attn_type_list[start:end])
 
             # Hybrid model Qwen3Next
-            layer_types_value = getattr(self.hf_config, "layer_types", None)
+            layer_types_value = self.model_arch_config.layer_types
             if layer_types_value is not None:
                 if block_type == "attention":
                     return sum(
@@ -1301,26 +1297,9 @@ class ModelConfig:
             ):
                 raise ValueError(
                     "The model is an hybrid without a layers_block_type or an "
-                    "attn_type_list, or a layer_types in the hf_config, "
+                    "attn_type_list, or a layer_types in the model_arch_config, "
                     f"cannot determine the num of {block_type} layers"
                 )
-
-    def get_mamba_chunk_size(self) -> int | None:
-        """
-        Returns the mamba chunk size if it exists
-        """
-        # used by e.g. Bamba, FalconH1, Granite, PLaMo2
-        chunk_size = getattr(self.hf_text_config, "mamba_chunk_size", None)
-        if chunk_size is None:
-            # used by e.g. Mamba2, NemotronH, Zamba
-            chunk_size = getattr(self.hf_text_config, "chunk_size", None)
-
-        # Since Mamba1 does not have a chunk notion
-        # we use a default chunk size of 1024.
-        if chunk_size is None:
-            chunk_size = 2048
-
-        return chunk_size
 
     def get_multimodal_config(self) -> MultiModalConfig:
         """
@@ -1421,7 +1400,7 @@ class ModelConfig:
     @property
     def is_encoder_decoder(self) -> bool:
         """Extract the HF encoder/decoder model flag."""
-        return is_encoder_decoder(self.hf_config)
+        return self.model_arch_config.is_encoder_decoder
 
     @property
     def uses_alibi(self) -> bool:
@@ -1448,11 +1427,11 @@ class ModelConfig:
 
     @property
     def uses_mrope(self) -> bool:
-        return uses_mrope(self.hf_config)
+        return self.model_arch_config.uses_mrope
 
     @property
     def uses_xdrope_dim(self) -> int:
-        return uses_xdrope_dim(self.hf_config)
+        return self.model_arch_config.uses_xdrope_dim
 
     @property
     def is_multimodal_model(self) -> bool:
@@ -1480,7 +1459,7 @@ class ModelConfig:
     def is_hybrid(self) -> bool:
         # Handle granite-4.0-micro case which uses hybrid config but does not
         # actually contain any non-attention layers.
-        layer_types = getattr(self.hf_config, "layer_types", None)
+        layer_types = self.model_arch_config.layer_types
         if layer_types is not None and all(
             layer == "attention" for layer in layer_types
         ):
@@ -1505,19 +1484,17 @@ class ModelConfig:
 
     @property
     def is_matryoshka(self) -> bool:
-        return bool(getattr(self.hf_config, "matryoshka_dimensions", None)) or getattr(
-            self.hf_config, "is_matryoshka", False
-        )
+        return self.model_arch_config.is_matryoshka
 
     @property
     def matryoshka_dimensions(self):
-        return getattr(self.hf_config, "matryoshka_dimensions", None)
+        return self.model_arch_config.matryoshka_dimensions
 
     @property
     def use_pad_token(self) -> bool:
         # cross_encoder models defaults to using pad_token.
         # `llm as reranker` models defaults to not using pad_token.
-        return getattr(self.hf_config, "use_pad_token", True)
+        return self.model_arch_config.use_pad_token
 
     @property
     def head_dtype(self) -> torch.dtype:
@@ -1568,7 +1545,7 @@ class ModelConfig:
         tokenizer_config = None
         if (
             self.runner_type == "pooling"
-            and getattr(self.hf_config, "position_embedding_type", "") == "absolute"
+            and self.model_arch_config.position_embedding_type == "absolute"
         ):
             tokenizer_config = try_get_tokenizer_config(
                 self.tokenizer,
@@ -1595,7 +1572,7 @@ class ModelConfig:
             if pooling_type == "cls":
                 return "encoder_only"
             else:
-                is_causal = getattr(self.hf_config, "is_causal", True)
+                is_causal = self.model_arch_config.is_causal
                 return "encoder_only" if not is_causal else self._model_info.attn_type
         elif self.is_hybrid:
             return "hybrid"
@@ -1703,7 +1680,7 @@ class ModelConfig:
         return self.get_num_experts() > 1
 
     def is_quantized(self) -> bool:
-        return getattr(self.hf_config, "quantization_config", None) is not None
+        return self.model_arch_config.quantization_config is not None
 
 
 def get_served_model_name(model: str, served_model_name: str | list[str] | None):
@@ -1849,17 +1826,12 @@ def _resolve_auto_dtype(
 
 
 def _get_and_verify_dtype(
-    model_id: str,
-    config: PretrainedConfig,
+    model_arch_config: ModelArchitectureConfig,
     dtype: str | torch.dtype,
-    *,
     is_pooling_model: bool,
-    revision: str | None = None,
 ) -> torch.dtype:
-    config_dtype = ModelArchConfigConvertorBase.get_torch_dtype(
-        config, model_id, revision=revision
-    )
-    model_type = config.model_type
+    config_dtype = model_arch_config.torch_dtype
+    model_type = model_arch_config.model_type
 
     if isinstance(dtype, str):
         dtype = dtype.lower()

@@ -15,7 +15,10 @@ from vllm.config.utils import getattr_iter
 from vllm.logger import init_logger
 from vllm.transformers_utils.config import (
     get_hf_text_config,
+    is_encoder_decoder,
     try_get_safetensors_metadata,
+    uses_mrope,
+    uses_xdrope_dim,
 )
 from vllm.utils.torch_utils import common_broadcastable_dtype
 
@@ -239,6 +242,79 @@ class ModelArchConfigConvertorBase:
             derived_max_model_len = tmp_max_len
         return derived_max_model_len, max_len_key
 
+    def get_mamba_chunk_size(self) -> int | None:
+        """
+        Returns the mamba chunk size if it exists
+        """
+        # used by e.g. Bamba, FalconH1, Granite, PLaMo2
+        chunk_size = getattr(self.hf_text_config, "mamba_chunk_size", None)
+        if chunk_size is None:
+            # used by e.g. Mamba2, NemotronH, Zamba
+            chunk_size = getattr(self.hf_text_config, "chunk_size", None)
+
+        # Since Mamba1 does not have a chunk notion
+        # we use a default chunk size of 1024.
+        if chunk_size is None:
+            chunk_size = 2048
+
+        return chunk_size
+
+    def get_dual_chunk_attention_config(self) -> dict | None:
+        return getattr(self.hf_text_config, "dual_chunk_attention_config", None)
+
+    def get_block_configs(self) -> list | None:
+        return getattr(self.hf_text_config, "block_configs", None)
+
+    def get_layers_block_type(self) -> list | None:
+        return getattr(self.hf_text_config, "layers_block_type", None)
+
+    def get_attn_type_list(self) -> list | None:
+        return getattr(self.hf_text_config, "attn_type_list", None)
+
+    def get_layer_types(self) -> list | None:
+        return getattr(self.hf_text_config, "layer_types", None)
+
+    def get_is_encoder_decoder(self) -> bool:
+        return is_encoder_decoder(self.hf_config)
+
+    def get_uses_mrope(self) -> bool:
+        return uses_mrope(self.hf_config)
+
+    def get_uses_xdrope_dim(self) -> int:
+        return uses_xdrope_dim(self.hf_config)
+
+    def get_is_matryoshka(self) -> bool:
+        return bool(getattr(self.hf_config, "matryoshka_dimensions", None)) or getattr(
+            self.hf_config, "is_matryoshka", False
+        )
+
+    def get_matryoshka_dimensions(self) -> list | None:
+        return getattr(self.hf_config, "matryoshka_dimensions", None)
+
+    def get_use_pad_token(self) -> bool:
+        return getattr(self.hf_config, "use_pad_token", True)
+
+    def get_head_dtype(self) -> torch.dtype | str | None:
+        return getattr(self.hf_config, "head_dtype", None)
+
+    def get_position_embedding_type(self) -> str | None:
+        return getattr(self.hf_config, "position_embedding_type", None)
+
+    def get_is_causal(self) -> bool:
+        return getattr(self.hf_config, "is_causal", True)
+
+    def get_rope_parameters(self) -> dict | None:
+        return getattr(self.hf_text_config, "rope_parameters", None)
+
+    def get_original_max_position_embeddings(self) -> int:
+        return getattr(self.hf_text_config, "original_max_position_embeddings", 0)
+
+    def get_model_max_length(self) -> int:
+        return getattr(self.hf_text_config, "model_max_length", 0)
+
+    def get_text_sliding_window(self) -> int | None:
+        return getattr(self.hf_text_config, "sliding_window", None)
+
     def convert(self, model_id: str, revision: str | None) -> ModelArchitectureConfig:
         model_arch_config = ModelArchitectureConfig(
             architectures=getattr(self.hf_config, "architectures", []),
@@ -255,6 +331,28 @@ class ModelArchConfigConvertorBase:
             torch_dtype=self.get_torch_dtype(self.hf_config, model_id, revision),
             is_deepseek_mla=self.is_deepseek_mla(),
             derived_max_model_len_and_key=self.derive_max_model_len_and_key(),
+            attention_chunk_size=getattr(
+                self.hf_text_config, "attention_chunk_size", None
+            ),
+            mamba_chunk_size=self.get_mamba_chunk_size(),
+            dual_chunk_attention_config=self.get_dual_chunk_attention_config(),
+            block_configs=self.get_block_configs(),
+            layers_block_type=self.get_layers_block_type(),
+            attn_type_list=self.get_attn_type_list(),
+            layer_types=self.get_layer_types(),
+            is_encoder_decoder=self.get_is_encoder_decoder(),
+            uses_mrope=self.get_uses_mrope(),
+            uses_xdrope_dim=self.get_uses_xdrope_dim(),
+            is_matryoshka=self.get_is_matryoshka(),
+            matryoshka_dimensions=self.get_matryoshka_dimensions(),
+            use_pad_token=self.get_use_pad_token(),
+            head_dtype=self.get_head_dtype(),
+            position_embedding_type=self.get_position_embedding_type(),
+            is_causal=self.get_is_causal(),
+            rope_parameters=self.get_rope_parameters(),
+            original_max_position_embeddings=self.get_original_max_position_embeddings(),
+            model_max_length=self.get_model_max_length(),
+            text_sliding_window=self.get_text_sliding_window(),
         )
 
         return model_arch_config
