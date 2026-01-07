@@ -55,3 +55,6 @@ class ModelArchitectureConfig:
 
     derived_max_model_len_and_key: tuple[float, str | None]
     """Derived maximum model length and key from the hf config."""
+
+    is_multimodal_model: bool
+    """Whether the model is a multimodal model."""

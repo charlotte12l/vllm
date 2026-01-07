@@ -241,6 +241,10 @@ class ModelArchConfigConvertorBase:
             derived_max_model_len = tmp_max_len
         return derived_max_model_len, max_len_key
 
+    def is_multimodal_model(self) -> bool:
+        model_cls = ModelRegistry._try_load_model_cls(model_arch)
+        is_multimodal = supports_multimodal(model_cls)
+
     def convert(self) -> ModelArchitectureConfig:
         model_arch_config = ModelArchitectureConfig(
             architectures=self.get_architectures(),
