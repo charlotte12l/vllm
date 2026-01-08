@@ -1,22 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from typing import final
+from typing import TYPE_CHECKING, final
 
 import torch
+import torch.nn as nn
 from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
 from transformers import PretrainedConfig
 
 from vllm import envs
-from vllm.config.model_arch import (
-    ModelArchitectureConfig,
-)
+from vllm.config.model_arch import ModelArchitectureConfig
 from vllm.config.utils import getattr_iter
 from vllm.logger import init_logger
-from vllm.transformers_utils.config import (
-    try_get_safetensors_metadata,
-)
+from vllm.transformers_utils.config import try_get_safetensors_metadata
+from vllm.utils.import_utils import LazyLoader
 from vllm.utils.torch_utils import common_broadcastable_dtype
+
+if TYPE_CHECKING:
+    import vllm.model_executor.models as me_models
+else:
+    me_models = LazyLoader("model_executor", globals(), "vllm.model_executor.models")
+
 
 logger = init_logger(__name__)
 
@@ -242,8 +246,13 @@ class ModelArchConfigConvertorBase:
         return derived_max_model_len, max_len_key
 
     def is_multimodal_model(self) -> bool:
-        model_cls = ModelRegistry._try_load_model_cls(model_arch)
-        is_multimodal = supports_multimodal(model_cls)
+        model_cls: type[nn.Module] | None = me_models.registry._try_load_model_cls(
+            self.get_architectures()[0]
+        )
+        assert model_cls is not None, (
+            f"Unknown model architecture: {self.get_architectures()}"
+        )
+        return model_cls.supports_multimodal
 
     def convert(self) -> ModelArchitectureConfig:
         model_arch_config = ModelArchitectureConfig(
