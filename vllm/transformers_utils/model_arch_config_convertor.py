@@ -247,7 +247,7 @@ class ModelArchConfigConvertorBase:
 
     def is_multimodal_model(self) -> bool:
         model_cls: type[nn.Module] | None = me_models.registry._try_load_model_cls(
-            self.get_architectures()[0]
+            self.get_architectures()[0]  # will rebase upon #31633
         )
         assert model_cls is not None, (
             f"Unknown model architecture: {self.get_architectures()}"

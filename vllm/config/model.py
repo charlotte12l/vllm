@@ -553,7 +553,7 @@ class ModelConfig:
             logger.info("Encoder-decoder model detected, disabling mm processor cache.")
 
         # Init multimodal config if needed
-        if self._model_info.supports_multimodal:
+        if self.model_arch_config.is_multimodal_model:
             if (
                 mm_encoder_tp_mode == "data"
                 and not self._model_info.supports_multimodal_encoder_tp_data
@@ -1374,7 +1374,7 @@ class ModelConfig:
 
     @property
     def is_multimodal_model(self) -> bool:
-        return self.multimodal_config is not None
+        return self.model_arch_config.is_multimodal_model
 
     @property
     def is_multimodal_raw_input_only_model(self) -> bool:
