@@ -1,0 +1,56 @@
+{
+    "state-spaces/mamba-130m-hf": {
+        "model_max_len": 2048
+    },
+    "mistralai/Mamba-Codestral-7B-v0.1": {
+        "model_max_len": 128000
+    },
+    "tiiuae/falcon-mamba-7b-instruct": {
+        "model_max_len": 2048
+    },
+    "Zyphra/Zamba2-7B-instruct": {
+        "model_max_len": 4096
+    },
+    "tiiuae/falcon-7b": {
+        "model_max_len": 2048
+    },
+    "tiiuae/falcon-40b": {
+        "model_max_len": 2048
+    },
+    "luccafong/deepseek_mtp_main_random": {
+        "model_max_len": 163840
+    },
+    "luccafong/deepseek_mtp_draft_random": {
+        "model_max_len": 163840
+    },
+    "Qwen/Qwen3-Next-80B-A3B-Instruct": {
+        "model_max_len": 262144
+    },
+    "tiny-random/qwen3-next-moe": {
+        "model_max_len": 262144
+    },
+    "zai-org/GLM-4.5": {
+        "model_max_len": 131072
+    },
+    "baidu/ERNIE-4.5-21B-A3B-PT": {
+        "model_max_len": 131072
+    },
+    "lmsys/gpt-oss-20b-bf16": {
+        "model_max_len": 131072
+    },
+    "deepseek-ai/DeepSeek-V3.2-Exp": {
+        "model_max_len": 163840
+    },
+    "meta-llama/Llama-4-Scout-17B-16E-Instruct": {
+        "model_max_len": 10485760
+    },
+    "nvidia/Llama-3_3-Nemotron-Super-49B-v1": {
+        "model_max_len": 131072
+    },
+    "XiaomiMiMo/MiMo-7B-RL": {
+        "model_max_len": 32768
+    },
+    "meituan-longcat/LongCat-Flash-Chat": {
+        "model_max_len": 131072
+    }
+}
