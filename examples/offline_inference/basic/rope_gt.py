@@ -213,32 +213,33 @@ def main_speculative():
         model_config = speculative_config.draft_model_config
 
         res = {}
-        hf_config = model_config.hf_config
-        hf_text_config = model_config.hf_text_config
-        # print("lxy", hf_config, hf_text_config)
-        res["architectures"] = model_config.architectures
-        res["model_type"] = hf_config.model_type
-        res["text_model_type"] = getattr(hf_text_config, "model_type", None)
-        res["hidden_size"] = model_config.get_hidden_size()
-        res["total_num_hidden_layers"] = model_config.get_total_num_hidden_layers()
-        res["total_num_attention_heads"] = getattr(
-            hf_text_config, "num_attention_heads", 0
-        )
-        try:
-            res["head_size"] = model_config.get_head_size()
-        except Exception as e:
-            res["head_size"] = "Error: " + str(e)
+        res["model_max_len"] = model_config.max_model_len
+        # hf_config = model_config.hf_config
+        # hf_text_config = model_config.hf_text_config
+        # # print("lxy", hf_config, hf_text_config)
+        # res["architectures"] = model_config.architectures
+        # res["model_type"] = hf_config.model_type
+        # res["text_model_type"] = getattr(hf_text_config, "model_type", None)
+        # res["hidden_size"] = model_config.get_hidden_size()
+        # res["total_num_hidden_layers"] = model_config.get_total_num_hidden_layers()
+        # res["total_num_attention_heads"] = getattr(
+        #     hf_text_config, "num_attention_heads", 0
+        # )
+        # try:
+        #     res["head_size"] = model_config.get_head_size()
+        # except Exception as e:
+        #     res["head_size"] = "Error: " + str(e)
 
-        res["vocab_size"] = model_config.get_vocab_size()
-        res["total_num_kv_heads"] = model_config.get_total_num_kv_heads()
-        res["num_experts"] = model_config.get_num_experts()
+        # res["vocab_size"] = model_config.get_vocab_size()
+        # res["total_num_kv_heads"] = model_config.get_total_num_kv_heads()
+        # res["num_experts"] = model_config.get_num_experts()
 
-        res["is_deepseek_mla"] = model_config.is_deepseek_mla
-        res["is_multimodal_model"] = model_config.is_multimodal_model
-        dtype = _find_dtype(
-            speculative_config.model, hf_config, revision=model_config.revision
-        )
-        res["dtype"] = str(dtype)
+        # res["is_deepseek_mla"] = model_config.is_deepseek_mla
+        # res["is_multimodal_model"] = model_config.is_multimodal_model
+        # dtype = _find_dtype(
+        #     speculative_config.model, hf_config, revision=model_config.revision
+        # )
+        # res["dtype"] = str(dtype)
         all_res[draft_model] = res
 
     with open("draft_model_arch_groundtruth.json", "w") as f:
@@ -246,5 +247,5 @@ def main_speculative():
 
 
 if __name__ == "__main__":
-    main()
-    # main_speculative()
+    # main()
+    main_speculative()

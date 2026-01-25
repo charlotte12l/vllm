@@ -1,0 +1,17 @@
+{
+    "abhigoyal/vllm-medusa-llama-68m-random": {
+        "model_max_len": 2048
+    },
+    "luccafong/deepseek_mtp_draft_random": {
+        "model_max_len": 163840
+    },
+    "eagle618/eagle-deepseek-v3-random": {
+        "model_max_len": 163840
+    },
+    "yuhuili/EAGLE-LLaMA3-Instruct-8B": {
+        "model_max_len": 2048
+    },
+    "yuhuili/EAGLE3-LLaMA3.1-Instruct-8B": {
+        "model_max_len": 2048
+    }
+}
