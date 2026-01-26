@@ -2,9 +2,13 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import functools
 from copy import copy
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from vllm.config.kv_cache_spec_config import LayerKVCacheConfig
 
 from vllm.attention.layer import Attention
 from vllm.config import CacheConfig, VllmConfig
@@ -177,4 +181,31 @@ class CrossAttention(Attention):
             num_kv_heads=self.num_kv_heads,
             head_size=self.head_size,
             dtype=self.kv_cache_torch_dtype,
+        )
+
+    @classmethod
+    def create_kv_cache_spec_from_config(
+        cls,
+        layer_config: "LayerKVCacheConfig",
+        cache_config: "CacheConfig",
+    ) -> "KVCacheSpec":
+        """Create CrossAttentionSpec from layer config without model instantiation.
+
+        Args:
+            layer_config: Per-layer KV cache configuration.
+            cache_config: Global cache configuration.
+
+        Returns:
+            CrossAttentionSpec for encoder-decoder cross-attention.
+        """
+
+        assert layer_config.num_kv_heads is not None
+        assert layer_config.head_size is not None
+        assert layer_config.dtype is not None
+
+        return CrossAttentionSpec(
+            block_size=cache_config.block_size,
+            num_kv_heads=layer_config.num_kv_heads,
+            head_size=layer_config.head_size,
+            dtype=layer_config.dtype,
         )

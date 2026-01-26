@@ -5791,13 +5791,45 @@ class GPUModelRunner(
         """
         Generates the KVCacheSpec by parsing the kv cache format from each
         Attention module in the static forward context.
+
+        This method uses config-only KV cache spec computation when available,
+        falling back to the model-based approach for complex cases.
+
         Returns:
             KVCacheSpec: A dictionary mapping layer names to their KV cache
             format. Layers that do not need KV cache are not included.
         """
         if has_ec_transfer() and get_ec_transfer().is_producer:
             return {}
-        kv_cache_spec: dict[str, KVCacheSpec] = {}
+
+        # Use config-only approach for standard models
+        model_arch_config = self.vllm_config.model_config.model_arch_config
+        cache_config = self.vllm_config.cache_config
+
+        # Get KV cache dtype
+        kv_cache_dtype = kv_cache_dtype_str_to_dtype(
+            cache_config.cache_dtype, self.vllm_config.model_config
+        )
+
+        # Check if model_arch_config has KV cache requirements populated
+        # This is the config-only path
+        from vllm.v1.worker.kv_cache_spec_utils import (
+            compute_kv_cache_specs_from_config,
+        )
+
+        try:
+            kv_cache_spec = dict(
+                compute_kv_cache_specs_from_config(
+                    model_arch_config=model_arch_config,
+                    cache_config=cache_config,
+                    kv_cache_dtype=kv_cache_dtype,
+                )
+            )
+        except (AssertionError, AttributeError):
+            # Fall back to model-based approach if config is incomplete
+            kv_cache_spec = self._get_kv_cache_spec_from_model()
+
+        # Handle KV sharing - still needs model inspection for layer names
         layer_type = cast(type[Any], AttentionLayerBase)
         attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
         for layer_name, attn_module in attn_layers.items():
@@ -5812,7 +5844,21 @@ class GPUModelRunner(
                 # a given amount of memory to accommodate longer context lengths
                 # or enable more requests to be processed simultaneously.
                 self.shared_kv_cache_layers[layer_name] = kv_tgt_layer
-                continue
+                # Remove from spec if it was added
+                kv_cache_spec.pop(layer_name, None)
+
+        return kv_cache_spec
+
+    def _get_kv_cache_spec_from_model(self) -> dict[str, KVCacheSpec]:
+        """
+        Legacy method: Get KV cache spec by iterating through model layers.
+
+        This is the fallback approach when config-only computation fails.
+        """
+        kv_cache_spec: dict[str, KVCacheSpec] = {}
+        layer_type = cast(type[Any], AttentionLayerBase)
+        attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
+        for layer_name, attn_module in attn_layers.items():
             # Skip modules that don't need KV cache (eg encoder-only attention)
             if spec := attn_module.get_kv_cache_spec(self.vllm_config):
                 kv_cache_spec[layer_name] = spec

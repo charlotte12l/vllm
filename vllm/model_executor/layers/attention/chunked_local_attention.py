@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import functools
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from vllm.config import CacheConfig
+    from vllm.config.kv_cache_spec_config import LayerKVCacheConfig
 
 from vllm.attention.layer import Attention
 from vllm.config import CacheConfig
@@ -127,4 +132,51 @@ class ChunkedLocalAttention(Attention):
             head_size=self.head_size,
             dtype=self.kv_cache_torch_dtype,
             attention_chunk_size=self.attention_chunk_size,
+        )
+
+    @classmethod
+    def create_kv_cache_spec_from_config(
+        cls,
+        layer_config: "LayerKVCacheConfig",
+        cache_config: "CacheConfig",
+    ) -> "KVCacheSpec":
+        """Create ChunkedLocalAttentionSpec from layer config.
+
+        Args:
+            layer_config: Per-layer KV cache configuration.
+            cache_config: Global cache configuration.
+
+        Returns:
+            ChunkedLocalAttentionSpec or FullAttentionSpec depending on
+            hybrid allocator.
+        """
+        from vllm.v1.kv_cache_interface import (
+            ChunkedLocalAttentionSpec,
+            FullAttentionSpec,
+        )
+
+        assert layer_config.num_kv_heads is not None
+        assert layer_config.head_size is not None
+        assert layer_config.dtype is not None
+        assert layer_config.attention_chunk_size is not None
+
+        block_size = cache_config.block_size
+
+        # When hybrid allocator is disabled, use FullAttentionSpec with metadata
+        if not cache_config.enable_hybrid_allocator:
+            return FullAttentionSpec(
+                block_size=block_size,
+                num_kv_heads=layer_config.num_kv_heads,
+                head_size=layer_config.head_size,
+                head_size_v=layer_config.head_size_v or layer_config.head_size,
+                dtype=layer_config.dtype,
+                attention_chunk_size=layer_config.attention_chunk_size,
+            )
+
+        return ChunkedLocalAttentionSpec(
+            block_size=block_size,
+            num_kv_heads=layer_config.num_kv_heads,
+            head_size=layer_config.head_size,
+            dtype=layer_config.dtype,
+            attention_chunk_size=layer_config.attention_chunk_size,
         )
