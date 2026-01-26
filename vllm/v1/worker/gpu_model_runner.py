@@ -5802,25 +5802,36 @@ class GPUModelRunner(
         if has_ec_transfer() and get_ec_transfer().is_producer:
             return {}
 
-        # Use config-only approach for standard models
-        model_arch_config = self.vllm_config.model_config.model_arch_config
         cache_config = self.vllm_config.cache_config
+        model_config = self.vllm_config.model_config
 
         # Get KV cache dtype
         kv_cache_dtype = kv_cache_dtype_str_to_dtype(
-            cache_config.cache_dtype, self.vllm_config.model_config
+            cache_config.cache_dtype, model_config
         )
 
-        # Check if model_arch_config has KV cache requirements populated
-        # This is the config-only path
+        # Use config-only approach via model_arch_config_convertor
+        # This avoids instantiating the model just to get KV cache specs
+        from vllm.transformers_utils.model_arch_config_convertor import (
+            MODEL_ARCH_CONFIG_CONVERTORS,
+            ModelArchConfigConvertorBase,
+        )
         from vllm.v1.worker.kv_cache_spec_utils import (
             compute_kv_cache_specs_from_config,
         )
 
         try:
+            # Create the convertor directly
+            convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
+                model_config.hf_config.model_type, ModelArchConfigConvertorBase
+            )
+            convertor = convertor_cls(
+                model_config.hf_config, model_config.hf_text_config
+            )
+
             kv_cache_spec = dict(
                 compute_kv_cache_specs_from_config(
-                    model_arch_config=model_arch_config,
+                    convertor=convertor,
                     cache_config=cache_config,
                     kv_cache_dtype=kv_cache_dtype,
                 )

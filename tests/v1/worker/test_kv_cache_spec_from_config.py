@@ -520,3 +520,61 @@ class TestParseKVSharingPattern:
         result = parse_kv_sharing_pattern(MockConfig(), 32)
 
         assert result is None
+
+
+class TestComputeKVCacheSpecsFromConfig:
+    """Tests for compute_kv_cache_specs_from_config function."""
+
+    def get_cache_config(self, **kwargs) -> CacheConfig:
+        """Create a CacheConfig with test defaults."""
+        defaults = {
+            "block_size": 16,
+            "cache_dtype": "auto",
+            "enable_hybrid_allocator": True,
+        }
+        defaults.update(kwargs)
+        return CacheConfig(**defaults)
+
+    def test_compute_with_mock_convertor(self):
+        """Test compute_kv_cache_specs_from_config with a mock convertor."""
+        from vllm.v1.worker.kv_cache_spec_utils import (
+            compute_kv_cache_specs_from_config,
+        )
+
+        class MockConvertor:
+            def get_kv_cache_requirements(
+                self, kv_cache_dtype: torch.dtype, prefix: str = "model.layers"
+            ) -> ModelKVCacheRequirements:
+                layers = [
+                    LayerKVCacheConfig(
+                        layer_idx=i,
+                        layer_name=f"{prefix}.{i}.self_attn.attn",
+                        attention_type=LayerAttentionType.FULL,
+                        block_type=LayerBlockType.ATTENTION,
+                        num_kv_heads=8,
+                        head_size=64,
+                        dtype=kv_cache_dtype,
+                    )
+                    for i in range(4)
+                ]
+                return ModelKVCacheRequirements(
+                    layers=layers,
+                    default_num_kv_heads=8,
+                    default_head_size=64,
+                    default_dtype=kv_cache_dtype,
+                )
+
+        convertor = MockConvertor()
+        cache_config = self.get_cache_config()
+
+        specs = compute_kv_cache_specs_from_config(
+            convertor=convertor,
+            cache_config=cache_config,
+            kv_cache_dtype=torch.float16,
+        )
+
+        assert len(specs) == 4
+        for i in range(4):
+            layer_name = f"model.layers.{i}.self_attn.attn"
+            assert layer_name in specs
+            assert isinstance(specs[layer_name], FullAttentionSpec)

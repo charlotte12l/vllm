@@ -8,6 +8,13 @@ from safetensors.torch import _TYPES as _SAFETENSORS_TO_TORCH_DTYPE
 from transformers import PretrainedConfig
 
 from vllm import envs
+from vllm.config.kv_cache_spec_config import (
+    LayerAttentionType,
+    LayerBlockType,
+    LayerKVCacheConfig,
+    LayerRole,
+    ModelKVCacheRequirements,
+)
 from vllm.config.model_arch import (
     ModelArchitectureConfig,
 )
@@ -241,6 +248,190 @@ class ModelArchConfigConvertorBase:
             derived_max_model_len = tmp_max_len
         return derived_max_model_len, max_len_key
 
+    # ========== KV Cache Config Methods ==========
+
+    def get_sliding_window(self) -> int | None:
+        """Get sliding window size from HF config."""
+        return getattr(self.hf_text_config, "sliding_window", None)
+
+    def get_attention_chunk_size(self) -> int | None:
+        """Get attention chunk size from HF config."""
+        return getattr(self.hf_text_config, "attention_chunk_size", None)
+
+    def get_kv_lora_rank(self) -> int | None:
+        """Get KV LoRA rank for MLA from HF config."""
+        return getattr(self.hf_text_config, "kv_lora_rank", None)
+
+    def get_qk_rope_head_dim(self) -> int | None:
+        """Get QK RoPE head dim for MLA from HF config."""
+        return getattr(self.hf_text_config, "qk_rope_head_dim", None)
+
+    def _parse_layer_types(self) -> list[LayerAttentionType]:
+        """Parse layer_types from HF config."""
+        num_layers = self.get_num_hidden_layers()
+        layer_types_raw = getattr(self.hf_text_config, "layer_types", None)
+
+        if layer_types_raw is None:
+            layer_types_raw = getattr(self.hf_text_config, "attention_types", None)
+
+        if layer_types_raw is None:
+            return [LayerAttentionType.FULL] * num_layers
+
+        type_mapping = {
+            "full_attention": LayerAttentionType.FULL,
+            "full": LayerAttentionType.FULL,
+            "sliding_attention": LayerAttentionType.SLIDING_WINDOW,
+            "sliding": LayerAttentionType.SLIDING_WINDOW,
+            "sliding_window": LayerAttentionType.SLIDING_WINDOW,
+            "chunked_attention": LayerAttentionType.CHUNKED_LOCAL,
+            "chunked": LayerAttentionType.CHUNKED_LOCAL,
+            "chunked_local": LayerAttentionType.CHUNKED_LOCAL,
+            "linear_attention": LayerAttentionType.LINEAR,
+            "linear": LayerAttentionType.LINEAR,
+        }
+
+        result = []
+        for lt in layer_types_raw:
+            lt_lower = lt.lower() if isinstance(lt, str) else str(lt).lower()
+            result.append(type_mapping.get(lt_lower, LayerAttentionType.FULL))
+
+        # Extend or truncate to match num_layers
+        if len(result) < num_layers:
+            result.extend([LayerAttentionType.FULL] * (num_layers - len(result)))
+        elif len(result) > num_layers:
+            result = result[:num_layers]
+
+        return result
+
+    def _parse_layers_block_type(self) -> list[LayerBlockType]:
+        """Parse layers_block_type from HF config."""
+        num_layers = self.get_num_hidden_layers()
+        block_types_raw = getattr(self.hf_text_config, "layers_block_type", None)
+
+        if block_types_raw is None:
+            return [LayerBlockType.ATTENTION] * num_layers
+
+        type_mapping = {
+            "attention": LayerBlockType.ATTENTION,
+            "attn": LayerBlockType.ATTENTION,
+            "mamba": LayerBlockType.MAMBA,
+            "ssm": LayerBlockType.MAMBA,
+            "hybrid": LayerBlockType.HYBRID,
+        }
+
+        result = []
+        for bt in block_types_raw:
+            bt_lower = bt.lower() if isinstance(bt, str) else str(bt).lower()
+            result.append(type_mapping.get(bt_lower, LayerBlockType.ATTENTION))
+
+        if len(result) < num_layers:
+            result.extend([LayerBlockType.ATTENTION] * (num_layers - len(result)))
+        elif len(result) > num_layers:
+            result = result[:num_layers]
+
+        return result
+
+    def get_kv_cache_layer_configs(
+        self,
+        kv_cache_dtype: torch.dtype,
+        prefix: str = "model.layers",
+    ) -> list[LayerKVCacheConfig]:
+        """Build per-layer KV cache configs from HF config.
+
+        This method parses HuggingFace config to generate per-layer
+        KV cache configurations without needing to instantiate the model.
+
+        Args:
+            kv_cache_dtype: The dtype for KV cache tensors.
+            prefix: The prefix for layer names (default: "model.layers").
+
+        Returns:
+            List of LayerKVCacheConfig for each layer.
+        """
+        num_layers = self.get_num_hidden_layers()
+        layer_types = self._parse_layer_types()
+        layers_block_type = self._parse_layers_block_type()
+
+        sliding_window = self.get_sliding_window()
+        attention_chunk_size = self.get_attention_chunk_size()
+        is_mla = self.is_deepseek_mla()
+
+        layers: list[LayerKVCacheConfig] = []
+
+        for layer_idx in range(num_layers):
+            attention_type = layer_types[layer_idx]
+            block_type = layers_block_type[layer_idx]
+
+            layer_name = f"{prefix}.{layer_idx}.self_attn.attn"
+
+            # Get sliding window for sliding_attention layers
+            layer_sliding_window = None
+            if attention_type == LayerAttentionType.SLIDING_WINDOW:
+                layer_sliding_window = sliding_window
+
+            # Get chunk size for chunked_attention layers
+            layer_chunk_size = None
+            if attention_type == LayerAttentionType.CHUNKED_LOCAL:
+                layer_chunk_size = attention_chunk_size
+
+            # MLA-specific fields
+            kv_lora_rank = self.get_kv_lora_rank() if is_mla else None
+            qk_rope_head_dim = self.get_qk_rope_head_dim() if is_mla else None
+
+            # Calculate head_size for MLA
+            head_size = self.get_head_size()
+
+            layer_config = LayerKVCacheConfig(
+                layer_idx=layer_idx,
+                layer_name=layer_name,
+                attention_type=attention_type,
+                block_type=block_type,
+                role=LayerRole.DECODER,
+                num_kv_heads=self.get_total_num_kv_heads(),
+                head_size=head_size,
+                head_size_v=head_size,
+                dtype=kv_cache_dtype,
+                sliding_window=layer_sliding_window,
+                attention_chunk_size=layer_chunk_size,
+                kv_lora_rank=kv_lora_rank,
+                qk_rope_head_dim=qk_rope_head_dim,
+            )
+            layers.append(layer_config)
+
+        return layers
+
+    def get_kv_cache_requirements(
+        self,
+        kv_cache_dtype: torch.dtype,
+        prefix: str = "model.layers",
+    ) -> ModelKVCacheRequirements:
+        """Build complete KV cache requirements from HF config.
+
+        Args:
+            kv_cache_dtype: The dtype for KV cache tensors.
+            prefix: The prefix for layer names.
+
+        Returns:
+            ModelKVCacheRequirements with all per-layer configs.
+        """
+        layers = self.get_kv_cache_layer_configs(kv_cache_dtype, prefix)
+        layers_block_type = self._parse_layers_block_type()
+
+        is_hybrid = any(
+            bt in (LayerBlockType.MAMBA, LayerBlockType.HYBRID)
+            for bt in layers_block_type
+        )
+
+        return ModelKVCacheRequirements(
+            layers=layers,
+            default_num_kv_heads=self.get_total_num_kv_heads(),
+            default_head_size=self.get_head_size(),
+            default_dtype=kv_cache_dtype,
+            is_encoder_decoder=False,
+            is_hybrid=is_hybrid,
+            is_mla=self.is_deepseek_mla(),
+        )
+
     def convert(self) -> ModelArchitectureConfig:
         model_arch_config = ModelArchitectureConfig(
             architectures=self.get_architectures(),
@@ -267,6 +458,86 @@ class MambaModelArchConfigConvertor(ModelArchConfigConvertorBase):
 
     def get_total_num_kv_heads(self) -> int:
         return 0
+
+    def _get_mamba_type(self) -> str:
+        """Determine Mamba type from HF config."""
+        mamba_type = getattr(self.hf_text_config, "mamba_type", None)
+        if mamba_type is not None:
+            return mamba_type
+
+        model_type = getattr(self.hf_text_config, "model_type", "").lower()
+        if "mamba2" in model_type:
+            return "mamba2"
+
+        if hasattr(self.hf_text_config, "mamba_n_heads"):
+            return "mamba2"
+
+        return "mamba1"
+
+    def get_kv_cache_layer_configs(
+        self,
+        kv_cache_dtype: torch.dtype,
+        prefix: str = "model.layers",
+    ) -> list[LayerKVCacheConfig]:
+        """Build per-layer KV cache configs for Mamba models."""
+        num_layers = self.get_num_hidden_layers()
+        mamba_type = self._get_mamba_type()
+
+        # Get Mamba-specific parameters
+        ssm_state_size = getattr(self.hf_text_config, "state_size", 16)
+        conv_kernel_size = getattr(self.hf_text_config, "conv_kernel", 4)
+        intermediate_size = getattr(
+            self.hf_text_config,
+            "intermediate_size",
+            getattr(self.hf_text_config, "hidden_size", 0) * 2,
+        )
+        n_groups = getattr(self.hf_text_config, "n_groups", 1)
+        mamba_num_heads = getattr(self.hf_text_config, "mamba_n_heads", None)
+        mamba_head_dim = getattr(self.hf_text_config, "mamba_d_head", None)
+
+        layers: list[LayerKVCacheConfig] = []
+
+        for layer_idx in range(num_layers):
+            layer_name = f"{prefix}.{layer_idx}.mamba"
+
+            layer_config = LayerKVCacheConfig(
+                layer_idx=layer_idx,
+                layer_name=layer_name,
+                attention_type=LayerAttentionType.LINEAR,
+                block_type=LayerBlockType.MAMBA,
+                role=LayerRole.DECODER,
+                num_kv_heads=0,
+                head_size=0,
+                dtype=kv_cache_dtype,
+                mamba_type=mamba_type,
+                ssm_state_size=ssm_state_size,
+                conv_kernel_size=conv_kernel_size,
+                intermediate_size=intermediate_size,
+                n_groups=n_groups,
+                mamba_num_heads=mamba_num_heads,
+                mamba_head_dim=mamba_head_dim,
+            )
+            layers.append(layer_config)
+
+        return layers
+
+    def get_kv_cache_requirements(
+        self,
+        kv_cache_dtype: torch.dtype,
+        prefix: str = "model.layers",
+    ) -> ModelKVCacheRequirements:
+        """Build KV cache requirements for Mamba models."""
+        layers = self.get_kv_cache_layer_configs(kv_cache_dtype, prefix)
+
+        return ModelKVCacheRequirements(
+            layers=layers,
+            default_num_kv_heads=0,
+            default_head_size=0,
+            default_dtype=kv_cache_dtype,
+            is_encoder_decoder=False,
+            is_hybrid=True,  # Pure Mamba is considered hybrid for cache handling
+            is_mla=False,
+        )
 
 
 class TerratorchModelArchConfigConvertor(ModelArchConfigConvertorBase):

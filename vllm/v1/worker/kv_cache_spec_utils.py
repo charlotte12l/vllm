@@ -4,7 +4,8 @@
 Utilities for computing KV cache specs from configuration only.
 
 This module provides the dispatch logic to compute KVCacheSpec for each layer
-without instantiating the model, using only ModelArchitectureConfig and CacheConfig.
+without instantiating the model, using only the model_arch_convertor and
+CacheConfig.
 """
 
 from __future__ import annotations
@@ -15,9 +16,6 @@ from typing import TYPE_CHECKING
 import torch
 
 from vllm.config import CacheConfig
-
-if TYPE_CHECKING:
-    pass
 from vllm.config.kv_cache_spec_config import (
     LayerAttentionType,
     LayerBlockType,
@@ -25,12 +23,16 @@ from vllm.config.kv_cache_spec_config import (
     LayerRole,
     ModelKVCacheRequirements,
 )
-from vllm.config.model_arch import ModelArchitectureConfig
 from vllm.v1.kv_cache_interface import KVCacheSpec
+
+if TYPE_CHECKING:
+    from vllm.transformers_utils.model_arch_config_convertor import (
+        ModelArchConfigConvertorBase,
+    )
 
 
 def compute_kv_cache_specs_from_config(
-    model_arch_config: ModelArchitectureConfig,
+    convertor: ModelArchConfigConvertorBase,
     cache_config: CacheConfig,
     kv_cache_dtype: torch.dtype,
     prefix: str = "model.layers",
@@ -41,7 +43,7 @@ def compute_kv_cache_specs_from_config(
     It replaces the need to instantiate the model just to get KV cache specs.
 
     Args:
-        model_arch_config: Model architecture configuration from HF config.
+        convertor: Model architecture config convertor with KV cache methods.
         cache_config: Cache configuration.
         kv_cache_dtype: The dtype for KV cache (resolved from cache_config).
         prefix: Prefix for layer names (default: "model.layers").
@@ -49,8 +51,8 @@ def compute_kv_cache_specs_from_config(
     Returns:
         Dict mapping layer names to their KVCacheSpec.
     """
-    # Build per-layer configs from model architecture config
-    requirements = model_arch_config.get_kv_cache_requirements(
+    # Build per-layer configs from convertor
+    requirements = convertor.get_kv_cache_requirements(
         kv_cache_dtype=kv_cache_dtype,
         prefix=prefix,
     )
@@ -156,99 +158,6 @@ def _create_hybrid_spec(
     return Attention.create_kv_cache_spec_from_config(layer_config, cache_config)
 
 
-def build_kv_cache_requirements_from_hf_config(
-    hf_config: object,
-    model_arch_config: ModelArchitectureConfig,
-    kv_cache_dtype: torch.dtype,
-    prefix: str = "model.layers",
-) -> ModelKVCacheRequirements:
-    """Build KV cache requirements from HuggingFace config.
-
-    This helper function parses HuggingFace config to extract layer_types,
-    layers_block_type, and other relevant fields to build the complete
-    KV cache requirements.
-
-    Args:
-        hf_config: HuggingFace model config object.
-        model_arch_config: Existing model architecture config.
-        kv_cache_dtype: The dtype for KV cache.
-        prefix: Prefix for layer names.
-
-    Returns:
-        ModelKVCacheRequirements with all per-layer configs.
-    """
-    # Parse layer types from HF config
-    layer_types = parse_layer_types(
-        hf_config, model_arch_config.total_num_hidden_layers
-    )
-    layers_block_type = parse_layers_block_type(
-        hf_config, model_arch_config.total_num_hidden_layers
-    )
-
-    # Determine if this is an MLA model
-    is_mla = getattr(hf_config, "kv_lora_rank", None) is not None
-
-    # Determine if this is an encoder-decoder model
-    is_encoder_decoder = getattr(hf_config, "is_encoder_decoder", False)
-
-    # Determine if this is a hybrid model
-    is_hybrid = any(
-        bt == LayerBlockType.MAMBA or bt == LayerBlockType.HYBRID
-        for bt in layers_block_type
-    )
-
-    # Build per-layer configs
-    layers: list[LayerKVCacheConfig] = []
-    num_layers = model_arch_config.total_num_hidden_layers
-
-    for layer_idx in range(num_layers):
-        attention_type = (
-            layer_types[layer_idx] if layer_types else LayerAttentionType.FULL
-        )
-        block_type = (
-            layers_block_type[layer_idx]
-            if layers_block_type
-            else LayerBlockType.ATTENTION
-        )
-
-        layer_name = f"{prefix}.{layer_idx}.self_attn.attn"
-
-        layer_config = LayerKVCacheConfig(
-            layer_idx=layer_idx,
-            layer_name=layer_name,
-            attention_type=attention_type,
-            block_type=block_type,
-            role=LayerRole.DECODER,
-            num_kv_heads=model_arch_config.total_num_kv_heads,
-            head_size=model_arch_config.head_size,
-            dtype=kv_cache_dtype,
-            sliding_window=getattr(hf_config, "sliding_window", None),
-            attention_chunk_size=getattr(hf_config, "attention_chunk_size", None),
-            kv_lora_rank=getattr(hf_config, "kv_lora_rank", None),
-            qk_rope_head_dim=getattr(hf_config, "qk_rope_head_dim", None),
-            mamba_type=_get_mamba_type(hf_config)
-            if block_type != LayerBlockType.ATTENTION
-            else None,
-            ssm_state_size=getattr(hf_config, "state_size", None),
-            conv_kernel_size=getattr(hf_config, "conv_kernel", None),
-            intermediate_size=getattr(hf_config, "intermediate_size", None),
-            n_groups=getattr(hf_config, "n_groups", None),
-            mamba_num_heads=getattr(hf_config, "mamba_n_heads", None),
-            mamba_head_dim=getattr(hf_config, "mamba_d_head", None),
-        )
-        layers.append(layer_config)
-
-    return ModelKVCacheRequirements(
-        layers=layers,
-        default_num_kv_heads=model_arch_config.total_num_kv_heads,
-        default_head_size=model_arch_config.head_size,
-        default_dtype=kv_cache_dtype,
-        is_encoder_decoder=is_encoder_decoder,
-        is_hybrid=is_hybrid,
-        is_mla=is_mla,
-    )
-
-
 def parse_layer_types(
     hf_config: object,
     num_layers: int,
@@ -317,7 +226,7 @@ def parse_layers_block_type(
 ) -> list[LayerBlockType]:
     """Parse layers_block_type from HuggingFace config.
 
-    The HF config is expected to have a `layers_block_type` field with values like:
+    The HF config is expected to have a `layers_block_type` field with values:
     - "attention"
     - "mamba"
     - "hybrid"
@@ -377,7 +286,7 @@ def parse_kv_sharing_pattern(
         num_layers: Number of layers in the model.
 
     Returns:
-        Dict mapping layer indices to their source layer indices, or None if no sharing.
+        Dict mapping layer indices to source layer indices, or None if none.
     """
     sharing_pattern = getattr(hf_config, "kv_sharing_pattern", None)
 
