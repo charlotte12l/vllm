@@ -8,9 +8,9 @@ import torch
 from vllm.config import (
     VllmConfig,
     get_layers_by_index_from_vllm_config,
-    get_layers_from_vllm_config,
 )
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
+from vllm.utils.torch_utils import kv_cache_dtype_str_to_dtype
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionMetadataBuilder,
@@ -24,14 +24,53 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.worker.utils import bind_kv_cache
 
 
-def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
-    kv_cache_spec: dict[str, KVCacheSpec] = {}
-    layer_type = cast(type[Any], AttentionLayerBase)
-    attn_layers = get_layers_from_vllm_config(vllm_config, layer_type)
-    for layer_name, attn_module in attn_layers.items():
-        # Skip modules that don't need KV cache (eg encoder-only attention)
-        if spec := attn_module.get_kv_cache_spec(vllm_config):
-            kv_cache_spec[layer_name] = spec
+def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[int, KVCacheSpec]:
+    """
+    Generates the KVCacheSpec purely from configuration without model
+    instantiation.
+
+    This method uses config-only KV cache spec computation via the
+    model_arch_config_convertor, enabling KV cache allocation before
+    model loading.
+
+    Args:
+        vllm_config: The VllmConfig containing model and cache configuration.
+
+    Returns:
+        dict[int, KVCacheSpec]: A dictionary mapping layer indices to their
+        KV cache spec. Layers that do not need KV cache are not included.
+    """
+    cache_config = vllm_config.cache_config
+    model_config = vllm_config.model_config
+
+    # Get KV cache dtype
+    kv_cache_dtype = kv_cache_dtype_str_to_dtype(cache_config.cache_dtype, model_config)
+
+    # Use config-only approach via model_arch_config_convertor
+    # This avoids instantiating the model just to get KV cache specs
+    from vllm.transformers_utils.model_arch_config_convertor import (
+        MODEL_ARCH_CONFIG_CONVERTORS,
+        ModelArchConfigConvertorBase,
+    )
+    from vllm.v1.worker.kv_cache_spec_utils import (
+        compute_kv_cache_specs_from_config,
+    )
+
+    # Create the convertor directly
+    convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
+        model_config.hf_config.model_type, ModelArchConfigConvertorBase
+    )
+    convertor = convertor_cls(model_config.hf_config, model_config.hf_text_config)
+
+    # Config-only path returns dict[int, KVCacheSpec] (layer indices)
+    kv_cache_spec = dict(
+        compute_kv_cache_specs_from_config(
+            convertor=convertor,
+            cache_config=cache_config,
+            kv_cache_dtype=kv_cache_dtype,
+        )
+    )
+
     return kv_cache_spec
 
 
@@ -40,7 +79,7 @@ def init_attn_backend(
     vllm_config: VllmConfig,
     device: torch.device,
 ):
-    attn_backends: dict[str, type[AttentionBackend]] = {}
+    attn_backends: dict[int, type[AttentionBackend]] = {}
     attn_metadata_builders: list[AttentionMetadataBuilder] = []
     flashinfer_workspace: torch.Tensor | None = None
     for kv_cache_group_spec in kv_cache_config.kv_cache_groups:
@@ -172,11 +211,11 @@ def build_attn_metadata(
     block_tables: Sequence[torch.Tensor],
     slot_mappings: torch.Tensor,
     kv_cache_config: KVCacheConfig,
-) -> dict[str, Any]:
+) -> dict[int, Any]:
     max_query_len = int(query_start_loc_cpu.max())
     seq_lens = seq_lens[:num_reqs]
 
-    attn_metadata: dict[str, Any] = {}
+    attn_metadata: dict[int, Any] = {}
     kv_cache_groups = kv_cache_config.kv_cache_groups
     for i, kv_cache_spec in enumerate(kv_cache_groups):
         block_table = block_tables[i]

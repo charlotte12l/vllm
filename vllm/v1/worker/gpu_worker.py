@@ -376,7 +376,7 @@ class Worker(WorkerBase):
         tp_rank = get_tp_group().rank_in_group
         return {tp_rank: metadata}
 
-    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
+    def get_kv_cache_spec(self) -> dict[int, KVCacheSpec]:
         return self.model_runner.get_kv_cache_spec()
 
     def update_max_model_len(self, max_model_len: int) -> None:

@@ -5859,22 +5859,6 @@ class GPUModelRunner(
 
         return kv_cache_spec
 
-    def _get_kv_cache_spec_from_model(self) -> dict[str, KVCacheSpec]:
-        """
-        Legacy method: Get KV cache spec by iterating through model layers.
-
-        This is the fallback approach when config-only computation fails.
-        """
-        kv_cache_spec: dict[str, KVCacheSpec] = {}
-        layer_type = cast(type[Any], AttentionLayerBase)
-        attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
-        for layer_name, attn_module in attn_layers.items():
-            # Skip modules that don't need KV cache (eg encoder-only attention)
-            if spec := attn_module.get_kv_cache_spec(self.vllm_config):
-                kv_cache_spec[layer_name] = spec
-
-        return kv_cache_spec
-
     def _to_list(self, sampled_token_ids: torch.Tensor) -> list[list[int]]:
         # This is a short term mitigation for issue mentioned in
         # https://github.com/vllm-project/vllm/issues/22754.
