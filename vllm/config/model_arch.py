@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+from __future__ import annotations
+
 from typing import Any
 
 from pydantic import ConfigDict
@@ -13,7 +15,12 @@ logger = init_logger(__name__)
 @dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class ModelArchitectureConfig:
     """
-    Configuration for model architecture that required by vLLM runtime
+    Configuration for model architecture that required by vLLM runtime.
+
+    This class contains only the core model architecture fields needed by
+    the vLLM runtime. KV cache configuration (layer_types, layers_block_type,
+    sliding_window, etc.) is computed separately via the model_arch_convertor
+    to avoid bloating this dataclass.
     """
 
     architectures: list[str] | None

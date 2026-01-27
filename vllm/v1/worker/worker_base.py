@@ -83,7 +83,7 @@ class WorkerBase:
         self.device: torch.device | None = None
         self.model_runner: nn.Module | None = None
 
-    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
+    def get_kv_cache_spec(self) -> dict[int, KVCacheSpec]:
         """Get specifications for KV cache implementation."""
         raise NotImplementedError
 

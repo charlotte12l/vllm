@@ -134,7 +134,7 @@ class MultiModalBudget:
 @dataclass
 class AttentionGroup:
     backend: type[AttentionBackend]
-    layer_names: list[str]
+    layer_indices: list[int]
     kv_cache_spec: KVCacheSpec
     kv_cache_group_id: int
     # When ubatching is enabled we will have a metadata builder for each ubatch
@@ -159,7 +159,7 @@ class AttentionGroup:
         self.metadata_builders = [
             self.backend.get_builder_cls()(
                 kv_cache_spec_builder,
-                self.layer_names,
+                self.layer_indices,
                 vllm_config,
                 device,
             )
@@ -271,9 +271,9 @@ def request_memory(init_snapshot: MemorySnapshot, cache_config: CacheConfig) -> 
 
 
 def add_kv_sharing_layers_to_kv_cache_groups(
-    shared_kv_cache_layers: dict[str, str],
+    shared_kv_cache_layers: dict[int, int],
     kv_cache_groups: list[KVCacheGroupSpec],
-    runner_only_attn_layers: set[str] | None = None,
+    runner_only_attn_layers: set[int] | None = None,
 ) -> None:
     """
     Sets up KV cache sharing by reusing the allocated KV caches in `kv_caches`
@@ -283,22 +283,22 @@ def add_kv_sharing_layers_to_kv_cache_groups(
 
     Args:
         shared_kv_cache_layers: Layer pairings for cross-layer KV sharing.
-            If an Attention layer `layer_name` is in the keys of this dict, it
+            If an Attention layer `layer_idx` is in the keys of this dict, it
             means this layer will perform attention using the keys and values
-            from the KV cache of `shared_kv_cache_layers[layer_name]`.
+            from the KV cache of `shared_kv_cache_layers[layer_idx]`.
         kv_cache_groups: The KV cache groups of the model.
     """
-    layer_to_kv_cache_group: dict[str, KVCacheGroupSpec] = {}
+    layer_idx_to_kv_cache_group: dict[int, KVCacheGroupSpec] = {}
     for kv_cache_group in kv_cache_groups:
-        for layer_name in kv_cache_group.layer_names:
-            layer_to_kv_cache_group[layer_name] = kv_cache_group
+        for layer_idx in kv_cache_group.layer_indices:
+            layer_idx_to_kv_cache_group[layer_idx] = kv_cache_group
 
-    for layer_name, target_layer_name in shared_kv_cache_layers.items():
-        tgt_kv_cache_group = layer_to_kv_cache_group[target_layer_name]
-        tgt_kv_cache_group.layer_names.append(layer_name)
+    for layer_idx, target_layer_idx in shared_kv_cache_layers.items():
+        tgt_kv_cache_group = layer_idx_to_kv_cache_group[target_layer_idx]
+        tgt_kv_cache_group.layer_indices.append(layer_idx)
 
         if runner_only_attn_layers is not None:
-            runner_only_attn_layers.add(layer_name)
+            runner_only_attn_layers.add(layer_idx)
 
 
 def bind_kv_cache(

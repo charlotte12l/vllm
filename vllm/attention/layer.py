@@ -2,7 +2,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Attention layer."""
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from vllm.config.kv_cache_spec_config import LayerKVCacheConfig
 
 import torch
 import torch.nn as nn
@@ -478,6 +481,63 @@ class Attention(nn.Module, AttentionLayerBase):
                 dtype=self.kv_cache_torch_dtype,
             )
 
+    @classmethod
+    def create_kv_cache_spec_from_config(
+        cls,
+        layer_config: "LayerKVCacheConfig",
+        cache_config: CacheConfig,
+    ) -> KVCacheSpec:
+        """Create KVCacheSpec from layer config without model instantiation.
+
+        This classmethod enables config-only KV cache spec computation.
+
+        Args:
+            layer_config: Per-layer KV cache configuration.
+            cache_config: Global cache configuration.
+
+        Returns:
+            KVCacheSpec for this attention type.
+        """
+        from vllm.config.kv_cache_spec_config import (
+            LayerAttentionType,
+        )
+
+        assert layer_config.num_kv_heads is not None
+        assert layer_config.head_size is not None
+        assert layer_config.dtype is not None
+
+        block_size = cache_config.block_size
+
+        # Dispatch based on attention_type
+        if layer_config.attention_type == LayerAttentionType.SLIDING_WINDOW:
+            assert layer_config.sliding_window is not None
+            # When hybrid allocator is disabled, use FullAttentionSpec with metadata
+            if not cache_config.enable_hybrid_allocator:
+                return FullAttentionSpec(
+                    block_size=block_size,
+                    num_kv_heads=layer_config.num_kv_heads,
+                    head_size=layer_config.head_size,
+                    head_size_v=layer_config.head_size_v or layer_config.head_size,
+                    dtype=layer_config.dtype,
+                    sliding_window=layer_config.sliding_window,
+                )
+            return SlidingWindowSpec(
+                block_size=block_size,
+                num_kv_heads=layer_config.num_kv_heads,
+                head_size=layer_config.head_size,
+                dtype=layer_config.dtype,
+                sliding_window=layer_config.sliding_window,
+            )
+        else:
+            # Full attention (default)
+            return FullAttentionSpec(
+                block_size=block_size,
+                num_kv_heads=layer_config.num_kv_heads,
+                head_size=layer_config.head_size,
+                head_size_v=layer_config.head_size_v or layer_config.head_size,
+                dtype=layer_config.dtype,
+            )
+
 
 class MLAAttention(nn.Module, AttentionLayerBase):
     """Multi-Head Latent Attention layer.
@@ -706,6 +766,33 @@ class MLAAttention(nn.Module, AttentionLayerBase):
             head_size=self.head_size,
             dtype=kv_cache_dtype,
             cache_dtype_str=vllm_config.cache_config.cache_dtype,
+        )
+
+    @classmethod
+    def create_kv_cache_spec_from_config(
+        cls,
+        layer_config: "LayerKVCacheConfig",
+        cache_config: CacheConfig,
+    ) -> KVCacheSpec:
+        """Create MLAAttentionSpec from layer config without model instantiation.
+
+        Args:
+            layer_config: Per-layer KV cache configuration.
+            cache_config: Global cache configuration.
+
+        Returns:
+            MLAAttentionSpec for MLA attention type.
+        """
+
+        assert layer_config.head_size is not None
+        assert layer_config.dtype is not None
+
+        return MLAAttentionSpec(
+            block_size=cache_config.block_size,
+            num_kv_heads=1,  # MLA uses single latent vector
+            head_size=layer_config.head_size,  # kv_lora_rank + qk_rope_head_dim
+            dtype=layer_config.dtype,
+            cache_dtype_str=layer_config.cache_dtype_str,
         )
 
 

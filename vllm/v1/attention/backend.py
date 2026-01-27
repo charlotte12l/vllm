@@ -443,12 +443,12 @@ class AttentionMetadataBuilder(ABC, Generic[M]):
     def __init__(
         self,
         kv_cache_spec: "AttentionSpec",
-        layer_names: list[str],
+        layer_indices: list[int],
         vllm_config: "VllmConfig",
         device: torch.device,
     ):
         self.kv_cache_spec = kv_cache_spec
-        self.layer_names = layer_names
+        self.layer_indices = layer_indices
         self.vllm_config = vllm_config
         self.device = device
 

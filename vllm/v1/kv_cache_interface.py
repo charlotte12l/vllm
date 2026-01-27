@@ -380,7 +380,7 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
     and should not be merged into one UniformTypeKVCacheSpecs.
     """
 
-    kv_cache_specs: dict[str, KVCacheSpec]
+    kv_cache_specs: dict[int, KVCacheSpec]
 
     @property
     def page_size_bytes(self) -> int:
@@ -394,7 +394,7 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
         return max_num_pages * self.page_size_bytes
 
     @classmethod
-    def is_uniform_type(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> bool:
+    def is_uniform_type(cls, kv_cache_specs: dict[int, KVCacheSpec]) -> bool:
         """
         Whether all layers have the same type of KV cache spec.
         """
@@ -436,7 +436,7 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
             )
 
     @classmethod
-    def from_specs(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> Self | None:
+    def from_specs(cls, kv_cache_specs: dict[int, KVCacheSpec]) -> Self | None:
         """
         Return a SameTypeKVCacheSpecs object if all layers have the same type
         of KV cache spec. Return None if not.
@@ -455,7 +455,7 @@ class KVCacheTensor:
     """
 
     size: int  # size of the KV cache tensor in bytes
-    shared_by: list[str]  # layer names that share the same KV cache tensor
+    shared_by: list[int]  # layer indices that share the same KV cache tensor
 
 
 @dataclass
@@ -465,8 +465,8 @@ class KVCacheGroupSpec:
     These layers are regarded as one layer in the KV cache manager.
     """
 
-    # The names of model layers in this group
-    layer_names: list[str]
+    # The indices of model layers in this group (0-indexed)
+    layer_indices: list[int]
     # The KV cache spec of this manager layer
     kv_cache_spec: KVCacheSpec
 

@@ -1497,3 +1497,34 @@ def get_layers_from_vllm_config(
         for layer_name in layer_names
         if isinstance(forward_context[layer_name], layer_type)
     }
+
+
+def get_layers_by_index_from_vllm_config(
+    vllm_config: VllmConfig,
+    layer_type: type[T],
+    layer_indices: list[int] | None = None,
+) -> dict[int, T]:
+    """
+    Get layers from the vLLM config, keyed by layer index.
+
+    This is similar to get_layers_from_vllm_config but returns layers
+    keyed by their layer_idx attribute instead of layer name.
+
+    Args:
+        vllm_config: The vLLM config.
+        layer_type: The type of the layer to get.
+        layer_indices: The indices of the layers to get. If None, return all.
+
+    Returns:
+        Dict mapping layer index to layer object.
+    """
+    forward_context = vllm_config.compilation_config.static_forward_context
+
+    result: dict[int, T] = {}
+    for layer_name, layer in forward_context.items():
+        if isinstance(layer, layer_type) and hasattr(layer, "layer_idx"):
+            layer_idx = layer.layer_idx
+            if layer_indices is None or layer_idx in layer_indices:
+                result[layer_idx] = layer
+
+    return result

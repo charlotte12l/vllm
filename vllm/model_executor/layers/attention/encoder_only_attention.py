@@ -2,8 +2,13 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import functools
 from copy import copy
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from vllm.config import CacheConfig
+    from vllm.config.kv_cache_spec_config import LayerKVCacheConfig
 
 from vllm.attention.layer import Attention
 from vllm.config import CacheConfig
@@ -98,4 +103,21 @@ class EncoderOnlyAttention(Attention):
 
     def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
         # Does not need KV cache
+        return None
+
+    @classmethod
+    def create_kv_cache_spec_from_config(
+        cls,
+        layer_config: "LayerKVCacheConfig",
+        cache_config: "CacheConfig",
+    ) -> None:
+        """Encoder-only attention does not need KV cache.
+
+        Args:
+            layer_config: Per-layer KV cache configuration.
+            cache_config: Global cache configuration.
+
+        Returns:
+            None - encoder-only attention doesn't need KV cache.
+        """
         return None
