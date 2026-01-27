@@ -272,34 +272,21 @@ class ModelArchConfigConvertorBase:
         layer_types_raw = getattr(self.hf_text_config, "layer_types", None)
 
         if layer_types_raw is None:
-            layer_types_raw = getattr(self.hf_text_config, "attention_types", None)
-
-        if layer_types_raw is None:
             return [LayerAttentionType.FULL] * num_layers
 
         type_mapping = {
             "full_attention": LayerAttentionType.FULL,
-            "full": LayerAttentionType.FULL,
             "sliding_attention": LayerAttentionType.SLIDING_WINDOW,
-            "sliding": LayerAttentionType.SLIDING_WINDOW,
-            "sliding_window": LayerAttentionType.SLIDING_WINDOW,
             "chunked_attention": LayerAttentionType.CHUNKED_LOCAL,
-            "chunked": LayerAttentionType.CHUNKED_LOCAL,
-            "chunked_local": LayerAttentionType.CHUNKED_LOCAL,
             "linear_attention": LayerAttentionType.LINEAR,
-            "linear": LayerAttentionType.LINEAR,
         }
 
+        assert len(layer_types_raw) == num_layers, (
+            f"Expected {num_layers} layer types, got {len(layer_types_raw)}"
+        )
         result = []
         for lt in layer_types_raw:
-            lt_lower = lt.lower() if isinstance(lt, str) else str(lt).lower()
-            result.append(type_mapping.get(lt_lower, LayerAttentionType.FULL))
-
-        # Extend or truncate to match num_layers
-        if len(result) < num_layers:
-            result.extend([LayerAttentionType.FULL] * (num_layers - len(result)))
-        elif len(result) > num_layers:
-            result = result[:num_layers]
+            result.append(type_mapping[lt])
 
         return result
 
@@ -334,7 +321,6 @@ class ModelArchConfigConvertorBase:
     def get_kv_cache_layer_configs(
         self,
         kv_cache_dtype: torch.dtype,
-        prefix: str = "model.layers",
     ) -> list[LayerKVCacheConfig]:
         """Build per-layer KV cache configs from HF config.
 
@@ -343,7 +329,7 @@ class ModelArchConfigConvertorBase:
 
         Args:
             kv_cache_dtype: The dtype for KV cache tensors.
-            prefix: The prefix for layer names (default: "model.layers").
+            (default: "model.layers").
 
         Returns:
             List of LayerKVCacheConfig for each layer.
@@ -361,8 +347,6 @@ class ModelArchConfigConvertorBase:
         for layer_idx in range(num_layers):
             attention_type = layer_types[layer_idx]
             block_type = layers_block_type[layer_idx]
-
-            layer_name = f"{prefix}.{layer_idx}.self_attn.attn"
 
             # Get sliding window for sliding_attention layers
             layer_sliding_window = None
@@ -383,7 +367,6 @@ class ModelArchConfigConvertorBase:
 
             layer_config = LayerKVCacheConfig(
                 layer_idx=layer_idx,
-                layer_name=layer_name,
                 attention_type=attention_type,
                 block_type=block_type,
                 role=LayerRole.DECODER,
@@ -403,18 +386,17 @@ class ModelArchConfigConvertorBase:
     def get_kv_cache_requirements(
         self,
         kv_cache_dtype: torch.dtype,
-        prefix: str = "model.layers",
     ) -> ModelKVCacheRequirements:
         """Build complete KV cache requirements from HF config.
 
         Args:
             kv_cache_dtype: The dtype for KV cache tensors.
-            prefix: The prefix for layer names.
+
 
         Returns:
             ModelKVCacheRequirements with all per-layer configs.
         """
-        layers = self.get_kv_cache_layer_configs(kv_cache_dtype, prefix)
+        layers = self.get_kv_cache_layer_configs(kv_cache_dtype)
         layers_block_type = self._parse_layers_block_type()
 
         is_hybrid = any(
@@ -477,7 +459,6 @@ class MambaModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_kv_cache_layer_configs(
         self,
         kv_cache_dtype: torch.dtype,
-        prefix: str = "model.layers",
     ) -> list[LayerKVCacheConfig]:
         """Build per-layer KV cache configs for Mamba models."""
         num_layers = self.get_num_hidden_layers()
@@ -498,11 +479,8 @@ class MambaModelArchConfigConvertor(ModelArchConfigConvertorBase):
         layers: list[LayerKVCacheConfig] = []
 
         for layer_idx in range(num_layers):
-            layer_name = f"{prefix}.{layer_idx}.mamba"
-
             layer_config = LayerKVCacheConfig(
                 layer_idx=layer_idx,
-                layer_name=layer_name,
                 attention_type=LayerAttentionType.LINEAR,
                 block_type=LayerBlockType.MAMBA,
                 role=LayerRole.DECODER,
@@ -524,10 +502,9 @@ class MambaModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_kv_cache_requirements(
         self,
         kv_cache_dtype: torch.dtype,
-        prefix: str = "model.layers",
     ) -> ModelKVCacheRequirements:
         """Build KV cache requirements for Mamba models."""
-        layers = self.get_kv_cache_layer_configs(kv_cache_dtype, prefix)
+        layers = self.get_kv_cache_layer_configs(kv_cache_dtype)
 
         return ModelKVCacheRequirements(
             layers=layers,

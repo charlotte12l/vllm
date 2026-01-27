@@ -6,6 +6,13 @@ Utilities for computing KV cache specs from configuration only.
 This module provides the dispatch logic to compute KVCacheSpec for each layer
 without instantiating the model, using only the model_arch_convertor and
 CacheConfig.
+
+Key design: We use layer indices (int) as keys, not layer names. This is:
+1. Model-agnostic (layer naming varies between model architectures)
+2. Simpler for the merge logic with Pipeline Parallelism
+
+The conversion from layer indices to actual layer names happens at binding
+time when the model is available.
 """
 
 from __future__ import annotations
@@ -35,8 +42,9 @@ def compute_kv_cache_specs_from_config(
     convertor: ModelArchConfigConvertorBase,
     cache_config: CacheConfig,
     kv_cache_dtype: torch.dtype,
-    prefix: str = "model.layers",
-) -> Mapping[str, KVCacheSpec]:
+    start_layer: int = 0,
+    end_layer: int | None = None,
+) -> Mapping[int, KVCacheSpec]:
     """Compute KV cache specs for all layers from config only.
 
     This is the main entry point for config-only KV cache spec computation.
@@ -46,24 +54,30 @@ def compute_kv_cache_specs_from_config(
         convertor: Model architecture config convertor with KV cache methods.
         cache_config: Cache configuration.
         kv_cache_dtype: The dtype for KV cache (resolved from cache_config).
-        prefix: Prefix for layer names (default: "model.layers").
+        start_layer: First layer index for this PP stage (default: 0).
+        end_layer: Last layer index (exclusive) for this PP stage (default: all).
 
     Returns:
-        Dict mapping layer names to their KVCacheSpec.
+        Dict mapping layer indices (int) to their KVCacheSpec.
     """
     # Build per-layer configs from convertor
-    requirements = convertor.get_kv_cache_requirements(
-        kv_cache_dtype=kv_cache_dtype,
-        prefix=prefix,
-    )
+    requirements = convertor.get_kv_cache_requirements(kv_cache_dtype=kv_cache_dtype)
+
+    # Filter layers for this PP stage if specified
+    if end_layer is None:
+        end_layer = requirements.layer_count
 
     # Dispatch each layer config to the appropriate attention class
-    kv_cache_specs: dict[str, KVCacheSpec] = {}
+    kv_cache_specs: dict[int, KVCacheSpec] = {}
 
     for layer_config in requirements.layers:
+        # Skip layers not in this PP stage
+        if layer_config.layer_idx < start_layer or layer_config.layer_idx >= end_layer:
+            continue
+
         spec = _dispatch_layer_spec(layer_config, cache_config, requirements)
         if spec is not None:
-            kv_cache_specs[layer_config.layer_name] = spec
+            kv_cache_specs[layer_config.layer_idx] = spec
 
     return kv_cache_specs
 
@@ -299,23 +313,3 @@ def parse_kv_sharing_pattern(
         result[int(key)] = int(value)
 
     return result
-
-
-def _get_mamba_type(hf_config: object) -> str:
-    """Determine Mamba type from HF config."""
-    # Check for explicit mamba_type field
-    mamba_type = getattr(hf_config, "mamba_type", None)
-    if mamba_type is not None:
-        return mamba_type
-
-    # Infer from model type
-    model_type = getattr(hf_config, "model_type", "").lower()
-    if "mamba2" in model_type:
-        return "mamba2"
-
-    # Check for Mamba2-specific fields
-    if hasattr(hf_config, "mamba_n_heads"):
-        return "mamba2"
-
-    # Default to mamba1
-    return "mamba1"

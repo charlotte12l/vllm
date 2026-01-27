@@ -53,9 +53,8 @@ class LayerKVCacheConfig:
     without instantiating the model.
     """
 
-    # Layer identification
+    # Layer identification (0-indexed)
     layer_idx: int
-    layer_name: str  # e.g., "model.layers.0.self_attn.attn"
 
     # From HF layer_types (attention mechanism within attention blocks)
     attention_type: LayerAttentionType = LayerAttentionType.FULL
@@ -95,8 +94,8 @@ class LayerKVCacheConfig:
     mamba_num_heads: int | None = None
     mamba_head_dim: int | None = None
 
-    # KV sharing
-    kv_sharing_target_layer_name: str | None = None
+    # KV sharing (target layer index, not name)
+    kv_sharing_target_layer_idx: int | None = None
 
 
 @dataclass

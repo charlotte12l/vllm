@@ -37,7 +37,6 @@ class TestLayerKVCacheConfig:
         """Test creating config for full attention layer."""
         config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.self_attn.attn",
             attention_type=LayerAttentionType.FULL,
             block_type=LayerBlockType.ATTENTION,
             role=LayerRole.DECODER,
@@ -56,7 +55,6 @@ class TestLayerKVCacheConfig:
         """Test creating config for sliding window attention layer."""
         config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.self_attn.attn",
             attention_type=LayerAttentionType.SLIDING_WINDOW,
             num_kv_heads=8,
             head_size=64,
@@ -71,7 +69,6 @@ class TestLayerKVCacheConfig:
         """Test creating config for Mamba layer."""
         config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.mamba",
             block_type=LayerBlockType.MAMBA,
             dtype=torch.float16,
             mamba_type="mamba2",
@@ -91,7 +88,6 @@ class TestLayerKVCacheConfig:
         """Test that LayerKVCacheConfig is frozen."""
         config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="test",
             dtype=torch.float16,
         )
 
@@ -107,7 +103,6 @@ class TestModelKVCacheRequirements:
         layers = [
             LayerKVCacheConfig(
                 layer_idx=i,
-                layer_name=f"model.layers.{i}.self_attn.attn",
                 dtype=torch.float16,
             )
             for i in range(32)
@@ -127,7 +122,6 @@ class TestModelKVCacheRequirements:
         layers = [
             LayerKVCacheConfig(
                 layer_idx=i,
-                layer_name=f"model.layers.{i}",
                 block_type=(
                     LayerBlockType.MAMBA if i % 2 == 0 else LayerBlockType.ATTENTION
                 ),
@@ -167,7 +161,6 @@ class TestAttentionCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.self_attn.attn",
             attention_type=LayerAttentionType.FULL,
             num_kv_heads=8,
             head_size=64,
@@ -189,7 +182,6 @@ class TestAttentionCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.self_attn.attn",
             attention_type=LayerAttentionType.SLIDING_WINDOW,
             num_kv_heads=8,
             head_size=64,
@@ -209,7 +201,6 @@ class TestAttentionCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.self_attn.attn",
             attention_type=LayerAttentionType.SLIDING_WINDOW,
             num_kv_heads=8,
             head_size=64,
@@ -237,7 +228,6 @@ class TestMLAAttentionCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.self_attn.attn",
             head_size=576,  # kv_lora_rank (512) + qk_rope_head_dim (64)
             dtype=torch.float16,
             kv_lora_rank=512,
@@ -273,7 +263,6 @@ class TestChunkedLocalAttentionCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.self_attn.attn",
             attention_type=LayerAttentionType.CHUNKED_LOCAL,
             num_kv_heads=8,
             head_size=64,
@@ -304,7 +293,6 @@ class TestCrossAttentionCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.cross_attn.attn",
             role=LayerRole.CROSS_ATTENTION,
             num_kv_heads=8,
             head_size=64,
@@ -334,7 +322,6 @@ class TestEncoderOnlyAttentionCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="encoder.layers.0.self_attn.attn",
             role=LayerRole.ENCODER_ONLY,
             num_kv_heads=8,
             head_size=64,
@@ -367,7 +354,6 @@ class TestMambaBaseCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.mamba",
             block_type=LayerBlockType.MAMBA,
             dtype=torch.float16,
             mamba_type="mamba2",
@@ -391,7 +377,6 @@ class TestMambaBaseCreateKVCacheSpecFromConfig:
 
         layer_config = LayerKVCacheConfig(
             layer_idx=0,
-            layer_name="model.layers.0.mamba",
             block_type=LayerBlockType.MAMBA,
             dtype=torch.float16,
             mamba_type="mamba1",
@@ -548,7 +533,6 @@ class TestComputeKVCacheSpecsFromConfig:
                 layers = [
                     LayerKVCacheConfig(
                         layer_idx=i,
-                        layer_name=f"{prefix}.{i}.self_attn.attn",
                         attention_type=LayerAttentionType.FULL,
                         block_type=LayerBlockType.ATTENTION,
                         num_kv_heads=8,
@@ -575,6 +559,5 @@ class TestComputeKVCacheSpecsFromConfig:
 
         assert len(specs) == 4
         for i in range(4):
-            layer_name = f"model.layers.{i}.self_attn.attn"
-            assert layer_name in specs
-            assert isinstance(specs[layer_name], FullAttentionSpec)
+            assert i in specs
+            assert isinstance(specs[i], FullAttentionSpec)

@@ -28,6 +28,7 @@ from vllm.config import (
     CompilationMode,
     CUDAGraphMode,
     VllmConfig,
+    get_layers_by_index_from_vllm_config,
     get_layers_from_vllm_config,
     update_config,
 )
@@ -186,7 +187,7 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
+AttnMetadataDict: TypeAlias = dict[int, AttentionMetadata]
 # list when ubatching is enabled
 PerLayerAttnMetadata: TypeAlias = list[AttnMetadataDict] | AttnMetadataDict
 
@@ -622,8 +623,8 @@ class GPUModelRunner(
         # If an Attention layer `layer_name` is in the keys of this dict, it
         # means this layer will perform attention using the keys and values
         # from the KV cache of `shared_kv_cache_layers[layer_name]`.
-        self.shared_kv_cache_layers: dict[str, str] = {}
-        self.kv_sharing_fast_prefill_eligible_layers: set[str] = set()
+        self.shared_kv_cache_layers: dict[int, int] = {}
+        self.kv_sharing_fast_prefill_eligible_layers: set[int] = set()
 
         self.kv_sharing_fast_prefill_logits_indices = None
         if self.cache_config.kv_sharing_fast_prefill:
@@ -647,7 +648,7 @@ class GPUModelRunner(
         # Attention layers that are only in the KVCacheConfig of the runner
         # (e.g., KV sharing, encoder-only attention), but not in the
         # KVCacheConfig of the scheduler.
-        self.runner_only_attn_layers: set[str] = set()
+        self.runner_only_attn_layers: set[int] = set()
 
         # Cached outputs.
         self._draft_token_ids: list[list[int]] | torch.Tensor | None = None
@@ -1715,7 +1716,9 @@ class GPUModelRunner(
             builder = attn_group.get_metadata_builder(ubid or 0)
             kv_cache_spec = kv_cache_groups[kv_cache_gid].kv_cache_spec
             if isinstance(kv_cache_spec, UniformTypeKVCacheSpecs):
-                kv_cache_spec = kv_cache_spec.kv_cache_specs[attn_group.layer_names[0]]
+                kv_cache_spec = kv_cache_spec.kv_cache_specs[
+                    attn_group.layer_indices[0]
+                ]
             cache_key = (kv_cache_spec, type(builder))
 
             cascade_attn_prefix_len = (
@@ -1763,8 +1766,8 @@ class GPUModelRunner(
                 assert isinstance(attn_metadata, list)
                 attn_metadata_dict = attn_metadata[ubid]
 
-            for layer_name in attn_group.layer_names:
-                attn_metadata_dict[layer_name] = attn_metadata_i
+            for layer_idx in attn_group.layer_indices:
+                attn_metadata_dict[layer_idx] = attn_metadata_i
 
         # Prepare the attention metadata for each KV cache group and make layers
         # in the same group share the same metadata.
@@ -1786,7 +1789,7 @@ class GPUModelRunner(
 
             if self.speculative_config and spec_decode_common_attn_metadata is None:
                 if isinstance(self.drafter, EagleProposer):
-                    if self.drafter.attn_layer_names[0] in kv_cache_group.layer_names:
+                    if self.drafter.attn_layer_names[0] in kv_cache_group.layer_indices:
                         spec_decode_common_attn_metadata = cm
                 else:
                     spec_decode_common_attn_metadata = cm
@@ -4991,10 +4994,10 @@ class GPUModelRunner(
 
         def get_attn_backends_for_group(
             kv_cache_group_spec: KVCacheGroupSpec,
-        ) -> tuple[dict[AttentionGroupKey, list[str]], set[type[AttentionBackend]]]:
+        ) -> tuple[dict[AttentionGroupKey, list[int]], set[type[AttentionBackend]]]:
             layer_type = cast(type[Any], AttentionLayerBase)
-            layers = get_layers_from_vllm_config(
-                self.vllm_config, layer_type, kv_cache_group_spec.layer_names
+            layers = get_layers_by_index_from_vllm_config(
+                self.vllm_config, layer_type, kv_cache_group_spec.layer_indices
             )
             attn_backends = {}
             attn_backend_layers = defaultdict(list)
@@ -5003,10 +5006,10 @@ class GPUModelRunner(
             # attention backend subclasses (e.g. ChunkedLocalAttention) unless
             # they are cached correctly, there will be different objects per
             # layer.
-            for layer_name in kv_cache_group_spec.layer_names:
-                attn_backend = layers[layer_name].get_attn_backend()
+            for layer_idx in kv_cache_group_spec.layer_indices:
+                attn_backend = layers[layer_idx].get_attn_backend()
 
-                if layer_name in self.kv_sharing_fast_prefill_eligible_layers:
+                if layer_idx in self.kv_sharing_fast_prefill_eligible_layers:
                     attn_backend = create_fast_prefill_custom_backend(
                         "FastPrefill",
                         attn_backend,  # type: ignore[arg-type]
@@ -5015,26 +5018,29 @@ class GPUModelRunner(
                 full_cls_name = attn_backend.full_cls_name()
                 layer_kv_cache_spec = kv_cache_group_spec.kv_cache_spec
                 if isinstance(layer_kv_cache_spec, UniformTypeKVCacheSpecs):
-                    layer_kv_cache_spec = layer_kv_cache_spec.kv_cache_specs[layer_name]
+                    layer_kv_cache_spec = layer_kv_cache_spec.kv_cache_specs[layer_idx]
                 key = (full_cls_name, layer_kv_cache_spec)
                 attn_backends[key] = AttentionGroupKey(
                     attn_backend, layer_kv_cache_spec
                 )
-                attn_backend_layers[key].append(layer_name)
+                attn_backend_layers[key].append(layer_idx)
             return (
                 {attn_backends[k]: v for k, v in attn_backend_layers.items()},
                 set(group_key.attn_backend for group_key in attn_backends.values()),
             )
 
         def create_attn_groups(
-            attn_backends_map: dict[AttentionGroupKey, list[str]],
+            attn_backends_map: dict[AttentionGroupKey, list[int]],
             kv_cache_group_id: int,
         ) -> list[AttentionGroup]:
             attn_groups: list[AttentionGroup] = []
-            for (attn_backend, kv_cache_spec), layer_names in attn_backends_map.items():
+            for (
+                attn_backend,
+                kv_cache_spec,
+            ), layer_indices in attn_backends_map.items():
                 attn_group = AttentionGroup(
                     attn_backend,
-                    layer_names,
+                    layer_indices,
                     kv_cache_spec,
                     kv_cache_group_id,
                 )
@@ -5397,7 +5403,7 @@ class GPUModelRunner(
 
     def _allocate_kv_cache_tensors(
         self, kv_cache_config: KVCacheConfig
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[int, torch.Tensor]:
         """
         Initializes the KV cache buffer with the correct size. The buffer needs
         to be reshaped to the desired shape before being used by the models.
@@ -5405,24 +5411,24 @@ class GPUModelRunner(
         Args:
             kv_cache_config: The KV cache config
         Returns:
-            dict[str, torch.Tensor]: A map between layer names to their
+            dict[int, torch.Tensor]: A map between layer indices to their
             corresponding memory buffer for KV cache.
         """
-        kv_cache_raw_tensors: dict[str, torch.Tensor] = {}
+        kv_cache_raw_tensors: dict[int, torch.Tensor] = {}
         for kv_cache_tensor in kv_cache_config.kv_cache_tensors:
             tensor = torch.zeros(
                 kv_cache_tensor.size, dtype=torch.int8, device=self.device
             )
-            for layer_name in kv_cache_tensor.shared_by:
-                kv_cache_raw_tensors[layer_name] = tensor
+            for layer_idx in kv_cache_tensor.shared_by:
+                kv_cache_raw_tensors[layer_idx] = tensor
 
-        layer_names = set()
+        layer_indices = set()
         for group in kv_cache_config.kv_cache_groups:
-            for layer_name in group.layer_names:
-                if layer_name in self.runner_only_attn_layers:
+            for layer_idx in group.layer_indices:
+                if layer_idx in self.runner_only_attn_layers:
                     continue
-                layer_names.add(layer_name)
-        assert layer_names == set(kv_cache_raw_tensors.keys()), (
+                layer_indices.add(layer_idx)
+        assert layer_indices == set(kv_cache_raw_tensors.keys()), (
             "Some layers are not correctly initialized"
         )
         return kv_cache_raw_tensors
@@ -5482,9 +5488,9 @@ class GPUModelRunner(
     def _reshape_kv_cache_tensors(
         self,
         kv_cache_config: KVCacheConfig,
-        kv_cache_raw_tensors: dict[str, torch.Tensor],
+        kv_cache_raw_tensors: dict[int, torch.Tensor],
         kernel_block_sizes: list[int],
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[int, torch.Tensor]:
         """
         Reshape the KV cache tensors to the desired shape and dtype.
 
@@ -5494,10 +5500,10 @@ class GPUModelRunner(
                 correct size but uninitialized shape.
             kernel_block_sizes: The kernel block sizes for each KV cache group.
         Returns:
-            Dict[str, torch.Tensor]: A map between layer names to their
+            dict[int, torch.Tensor]: A map between layer indices to their
             corresponding memory buffer for KV cache.
         """
-        kv_caches: dict[str, torch.Tensor] = {}
+        kv_caches: dict[int, torch.Tensor] = {}
         has_attn, has_mamba = False, False
         for group in self._kv_cache_spec_attn_group_iterator():
             kv_cache_spec = group.kv_cache_spec
@@ -5506,10 +5512,10 @@ class GPUModelRunner(
                 # There may be a last group for layers without kv cache.
                 continue
             kernel_block_size = kernel_block_sizes[group.kv_cache_group_id]
-            for layer_name in group.layer_names:
-                if layer_name in self.runner_only_attn_layers:
+            for layer_idx in group.layer_indices:
+                if layer_idx in self.runner_only_attn_layers:
                     continue
-                raw_tensor = kv_cache_raw_tensors[layer_name]
+                raw_tensor = kv_cache_raw_tensors[layer_idx]
                 assert raw_tensor.numel() % kv_cache_spec.page_size_bytes == 0
                 num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
                 if isinstance(kv_cache_spec, AttentionSpec):
@@ -5545,15 +5551,15 @@ class GPUModelRunner(
                         kv_cache_stride_order.index(i)
                         for i in range(len(kv_cache_stride_order))
                     ]
-                    kv_caches[layer_name] = (
-                        kv_cache_raw_tensors[layer_name]
+                    kv_caches[layer_idx] = (
+                        kv_cache_raw_tensors[layer_idx]
                         .view(dtype)
                         .view(kv_cache_shape)
                         .permute(*inv_order)
                     )
                 elif isinstance(kv_cache_spec, MambaSpec):
                     has_mamba = True
-                    raw_tensor = kv_cache_raw_tensors[layer_name]
+                    raw_tensor = kv_cache_raw_tensors[layer_idx]
                     state_tensors = []
                     storage_offset_bytes = 0
                     for shape, dtype in zip(kv_cache_spec.shapes, kv_cache_spec.dtypes):
@@ -5574,7 +5580,7 @@ class GPUModelRunner(
                         state_tensors.append(tensor)
                         storage_offset_bytes += stride[0] * dtype_size
 
-                    kv_caches[layer_name] = state_tensors
+                    kv_caches[layer_idx] = state_tensors
                 else:
                     raise NotImplementedError
 
@@ -5584,7 +5590,7 @@ class GPUModelRunner(
         return kv_caches
 
     def _update_hybrid_attention_mamba_layout(
-        self, kv_caches: dict[str, torch.Tensor]
+        self, kv_caches: dict[int, torch.Tensor]
     ) -> None:
         """
         Update the layout of attention layers from (2, num_blocks, ...) to
@@ -5596,8 +5602,8 @@ class GPUModelRunner(
 
         for group in self._kv_cache_spec_attn_group_iterator():
             kv_cache_spec = group.kv_cache_spec
-            for layer_name in group.layer_names:
-                kv_cache = kv_caches[layer_name]
+            for layer_idx in group.layer_indices:
+                kv_cache = kv_caches[layer_idx]
                 if isinstance(kv_cache_spec, AttentionSpec) and kv_cache.shape[0] == 2:
                     assert kv_cache.shape[1] != 2, (
                         "Fail to determine whether the layout is "
@@ -5650,9 +5656,11 @@ class GPUModelRunner(
             )
 
         # Set up cross-layer KV cache sharing
-        for layer_name, target_layer_name in self.shared_kv_cache_layers.items():
-            logger.debug("%s reuses KV cache of %s", layer_name, target_layer_name)
-            kv_caches[layer_name] = kv_caches[target_layer_name]
+        for layer_idx, target_layer_idx in self.shared_kv_cache_layers.items():
+            logger.debug(
+                "Layer %d reuses KV cache of layer %d", layer_idx, target_layer_idx
+            )
+            kv_caches[layer_idx] = kv_caches[target_layer_idx]
 
         num_attn_module = (
             2 if self.model_config.hf_config.model_type == "longcat_flash" else 1
@@ -5687,9 +5695,10 @@ class GPUModelRunner(
             # similar KV sharing setups, only the layers that generate KV caches
             # are involved in the prefill phase, enabling prefill to early exit.
             attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
-            for layer_name in reversed(attn_layers):
-                if layer_name in self.shared_kv_cache_layers:
-                    self.kv_sharing_fast_prefill_eligible_layers.add(layer_name)
+            for layer_name, attn_module in reversed(list(attn_layers.items())):
+                layer_idx = getattr(attn_module, "layer_idx", None)
+                if layer_idx is not None and layer_idx in self.shared_kv_cache_layers:
+                    self.kv_sharing_fast_prefill_eligible_layers.add(layer_idx)
                 else:
                     break
 
@@ -5787,17 +5796,18 @@ class GPUModelRunner(
                 KVCacheGroupSpec(layer_names=layer_names, kv_cache_spec=spec)
             )
 
-    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
+    def get_kv_cache_spec(self) -> dict[int, KVCacheSpec]:
         """
-        Generates the KVCacheSpec by parsing the kv cache format from each
-        Attention module in the static forward context.
+        Generates the KVCacheSpec purely from configuration without model
+        instantiation.
 
-        This method uses config-only KV cache spec computation when available,
-        falling back to the model-based approach for complex cases.
+        This method uses config-only KV cache spec computation via the
+        model_arch_config_convertor, enabling KV cache allocation before
+        model loading.
 
         Returns:
-            KVCacheSpec: A dictionary mapping layer names to their KV cache
-            format. Layers that do not need KV cache are not included.
+            dict[int, KVCacheSpec]: A dictionary mapping layer indices to their
+            KV cache spec. Layers that do not need KV cache are not included.
         """
         if has_ec_transfer() and get_ec_transfer().is_producer:
             return {}
@@ -5820,43 +5830,32 @@ class GPUModelRunner(
             compute_kv_cache_specs_from_config,
         )
 
-        try:
-            # Create the convertor directly
-            convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
-                model_config.hf_config.model_type, ModelArchConfigConvertorBase
-            )
-            convertor = convertor_cls(
-                model_config.hf_config, model_config.hf_text_config
-            )
+        # Create the convertor directly
+        convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
+            model_config.hf_config.model_type, ModelArchConfigConvertorBase
+        )
+        convertor = convertor_cls(model_config.hf_config, model_config.hf_text_config)
 
-            kv_cache_spec = dict(
-                compute_kv_cache_specs_from_config(
-                    convertor=convertor,
-                    cache_config=cache_config,
-                    kv_cache_dtype=kv_cache_dtype,
-                )
+        # Config-only path returns dict[int, KVCacheSpec] (layer indices)
+        kv_cache_spec = dict(
+            compute_kv_cache_specs_from_config(
+                convertor=convertor,
+                cache_config=cache_config,
+                kv_cache_dtype=kv_cache_dtype,
             )
-        except (AssertionError, AttributeError):
-            # Fall back to model-based approach if config is incomplete
-            kv_cache_spec = self._get_kv_cache_spec_from_model()
+        )
 
-        # Handle KV sharing - still needs model inspection for layer names
-        layer_type = cast(type[Any], AttentionLayerBase)
-        attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
-        for layer_name, attn_module in attn_layers.items():
-            if isinstance(attn_module, Attention) and (
-                kv_tgt_layer := attn_module.kv_sharing_target_layer_name
-            ):
-                # The layer doesn't need its own KV cache and will use that of
-                # the target layer. We skip creating a KVCacheSpec for it, so
-                # that KV cache management logic will act as this layer does
-                # not exist, and doesn't allocate KV cache for the layer. This
-                # enables the memory saving of cross-layer kv sharing, allowing
-                # a given amount of memory to accommodate longer context lengths
-                # or enable more requests to be processed simultaneously.
-                self.shared_kv_cache_layers[layer_name] = kv_tgt_layer
-                # Remove from spec if it was added
-                kv_cache_spec.pop(layer_name, None)
+        # Handle KV sharing from config
+        # The convertor provides kv_sharing_target_layer_idx for each layer
+        requirements = convertor.get_kv_cache_requirements(kv_cache_dtype)
+        for layer_config in requirements.layers:
+            if layer_config.kv_sharing_target_layer_idx is not None:
+                # This layer shares KV cache with another layer
+                layer_idx = layer_config.layer_idx
+                target_idx = layer_config.kv_sharing_target_layer_idx
+                self.shared_kv_cache_layers[layer_idx] = target_idx
+                # Remove from spec - it doesn't need its own KV cache
+                kv_cache_spec.pop(layer_idx, None)
 
         return kv_cache_spec
 

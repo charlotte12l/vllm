@@ -77,9 +77,18 @@ def collect_mamba_copy_meta(
     for mamba_group_id in mamba_group_ids:
         block_ids = req_state.block_ids[mamba_group_id]
         dest_block_id = block_ids[dest_block_idx]
-        layer_names = kv_cache_config.kv_cache_groups[mamba_group_id].layer_names
-        for layer_name in layer_names:
-            attention = forward_context[layer_name]
+        layer_indices = kv_cache_config.kv_cache_groups[mamba_group_id].layer_indices
+        # NOTE: forward_context is keyed by layer names. We need a mapping.
+        # For now, iterate over forward_context to find layers by index.
+        for layer_idx in layer_indices:
+            # Find the layer in forward_context that has this layer_idx
+            attention = None
+            for layer_name, ctx in forward_context.items():
+                if hasattr(ctx, "layer_idx") and ctx.layer_idx == layer_idx:
+                    attention = ctx
+                    break
+            if attention is None:
+                continue
             kv_caches: list[torch.Tensor] = attention.kv_cache[0]
             for state, state_copy_func in zip(kv_caches, mamba_state_copy_funcs):
                 copy_spec = state_copy_func(

@@ -94,8 +94,8 @@ class SpecDecodeBaseProposer:
 
         self.attn_metadata_builder: AttentionMetadataBuilder | None = None
         self.draft_indexer_metadata_builder: AttentionMetadataBuilder | None = None
-        self.attn_layer_names: list[str] = []
-        self.indexer_layer_names: list[str] = []
+        self.attn_layer_indices: list[int] = []
+        self.indexer_layer_indices: list[int] = []
         self.eagle3_use_aux_hidden_state: bool = (
             self._get_eagle3_use_aux_hidden_state_from_config()
         )
@@ -1052,6 +1052,15 @@ class SpecDecodeBaseProposer:
         )
         draft_indexer_layer_names = indexer_layers.keys() - target_indexer_layer_names
         self.attn_layer_names = list(draft_attn_layer_names - draft_indexer_layer_names)
+        # Build layer indices from layer names using layer_idx attribute
+        draft_attn_layers = get_layers_from_vllm_config(
+            self.vllm_config, AttentionLayerBase
+        )
+        self.attn_layer_indices = [
+            draft_attn_layers[name].layer_idx
+            for name in self.attn_layer_names
+            if hasattr(draft_attn_layers.get(name), "layer_idx")
+        ]
         self.indexer_layer_names = list(draft_indexer_layer_names)
 
         if self.indexer_layer_names:
@@ -1266,11 +1275,11 @@ class SpecDecodeBaseProposer:
             AssertionError: If no metadata builders are found for EAGLE layers.
         """
         builder = None
-        chosen_layer = self.attn_layer_names[0]
+        chosen_layer_idx = self.attn_layer_indices[0]
 
         for kv_cache_group in self.runner.attn_groups:
             for attn_group in kv_cache_group:
-                if chosen_layer in attn_group.layer_names:
+                if chosen_layer_idx in attn_group.layer_indices:
                     builder = attn_group.get_metadata_builder()
                     break
             if builder is not None:
@@ -1304,16 +1313,16 @@ class SpecDecodeBaseProposer:
         same AttentionMetadata.
         May extend to multiple AttentionMetadata in the future.
         """
-        kv_cache_groups: dict[str, int] = {}
+        kv_cache_groups: dict[int, int] = {}
         for id, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
-            for layer_name in kv_cache_group.layer_names:
-                kv_cache_groups[layer_name] = id
+            for layer_idx in kv_cache_group.layer_indices:
+                kv_cache_groups[layer_idx] = id
         assert (
             len(
                 set(
                     [
-                        kv_cache_groups[layer_name]
-                        for layer_name in self.attn_layer_names
+                        kv_cache_groups[layer_idx]
+                        for layer_idx in self.attn_layer_indices
                     ]
                 )
             )
