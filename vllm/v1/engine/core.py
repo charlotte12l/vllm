@@ -65,6 +65,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import compute_iteration_details
+from vllm.v1.worker.gpu.attn_utils import get_kv_cache_specs_from_config
 from vllm.version import __version__ as VLLM_VERSION
 
 logger = init_logger(__name__)
@@ -222,10 +223,11 @@ class EngineCore:
     ) -> tuple[int, int, KVCacheConfig]:
         start = time.time()
 
-        # Get all kv cache needed by the model
-        kv_cache_specs = self.model_executor.get_kv_cache_specs()
+        # Get KV cache specs from config (no RPC needed)
+        kv_cache_specs = get_kv_cache_specs_from_config(vllm_config)
 
-        has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
+        num_workers = self.model_executor.parallel_config.world_size
+        has_kv_cache = bool(kv_cache_specs)
         if has_kv_cache:
             if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
                 dp_group = getattr(self, "dp_group", None)
@@ -233,9 +235,9 @@ class EngineCore:
                 self.available_gpu_memory_for_kv_cache = (
                     ParallelConfig.sync_kv_cache_memory_size(dp_group, -1)
                 )
-                available_gpu_memory = [self.available_gpu_memory_for_kv_cache] * len(
-                    kv_cache_specs
-                )
+                available_gpu_memory = [
+                    self.available_gpu_memory_for_kv_cache
+                ] * num_workers
             else:
                 # Profiles the peak memory usage of the model to determine how
                 # much memory can be allocated for kv cache.
@@ -243,13 +245,13 @@ class EngineCore:
                 self.available_gpu_memory_for_kv_cache = available_gpu_memory[0]
         else:
             # Attention free models don't need memory for kv cache
-            available_gpu_memory = [0] * len(kv_cache_specs)
-
-        assert len(kv_cache_specs) == len(available_gpu_memory)
+            available_gpu_memory = [0] * num_workers
 
         # Track max_model_len before KV cache config to detect auto-fit changes
         max_model_len_before = vllm_config.model_config.max_model_len
 
+        # Generate KV cache configs using layer indices
+        # Workers will resolve indices to layer names during initialization
         kv_cache_configs = get_kv_cache_configs(
             vllm_config, kv_cache_specs, available_gpu_memory
         )
@@ -266,6 +268,7 @@ class EngineCore:
         num_cpu_blocks = 0
 
         # Initialize kv cache and warmup the execution
+        # Workers will resolve layer indices to names using static_forward_context
         self.model_executor.initialize_from_config(kv_cache_configs)
 
         elapsed = time.time() - start

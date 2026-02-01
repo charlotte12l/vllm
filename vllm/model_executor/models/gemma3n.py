@@ -353,34 +353,9 @@ class Gemma3nAttention(nn.Module):
         )
         self.is_kv_shared = layer_idx >= first_kv_shared_layer_idx
 
-        kv_sharing_target_layer_name = None
-        if self.is_kv_shared:
-            # Last full attention layer is 1 before sharing
-            # Last sliding attention layer is 2 before sharing
-            offset = 2 if self.sliding_window is not None else 1
-            kv_shared_layer_index = first_kv_shared_layer_idx - offset
-            if kv_shared_layer_index >= 0:
-                # Different model wrappers expose layer parameters under
-                # different parent attributes.
-                # For example:
-                #   - Gemma3nForCausalLM → parameters live under "model.layers"
-                #   - Gemma3nForConditionalGeneration →
-                #     under "language_model.model.layers"
-                # This logic extracts the portion of the parameter name
-                # *before* ".layers."
-                # so downstream code can consistently reference the correct
-                # model root regardless of which wrapper class was used.
-                if ".layers." in prefix:
-                    param_name_before_layers = prefix.split(".layers.")[0]
-                else:
-                    raise ValueError(
-                        "Unexpected prefix format for Gemma3nAttention: "
-                        f"'{prefix}'. The prefix is expected to contain "
-                        "'.layers.' to correctly determine the KV sharing "
-                        "target layer."
-                    )
-                # Only the greater layer is required to specify sharing.
-                kv_sharing_target_layer_name = f"{param_name_before_layers}.layers.{kv_shared_layer_index}.self_attn.attn"  # noqa: E501
+        # Note: KV sharing is now handled via kv_sharing_config in the model's
+        # config converter (Gemma3nModelArchConfigConvertor). We no longer set
+        # kv_sharing_target_layer_name directly on Attention modules.
 
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -397,7 +372,6 @@ class Gemma3nAttention(nn.Module):
             cache_config=cache_config,
             quant_config=quant_config,
             per_layer_sliding_window=self.sliding_window,
-            kv_sharing_target_layer_name=kv_sharing_target_layer_name,
             prefix=f"{prefix}.attn",
         )
 

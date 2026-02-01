@@ -1056,11 +1056,22 @@ class SpecDecodeBaseProposer:
 
         if self.indexer_layer_names:
             first_layer = self.indexer_layer_names[0]
+            # Get spec from config using classmethod
+            kv_cache_model_config = (
+                self.vllm_config.model_config.model_arch_config.kv_cache_config
+            )
+            indexer_spec = DeepseekV32IndexerCache.get_kv_cache_spec(
+                kv_cache_model_config,
+                self.vllm_config.cache_config,
+                self.vllm_config.parallel_config,
+                self.vllm_config.model_config.dtype,
+                "mla_indexer",
+            )
             self.draft_indexer_metadata_builder = (
                 indexer_layers[first_layer]
                 .get_attn_backend()
                 .get_builder_cls()(
-                    indexer_layers[first_layer].get_kv_cache_spec(self.vllm_config),
+                    indexer_spec,
                     self.indexer_layer_names,
                     self.vllm_config,
                     self.device,
@@ -1306,7 +1317,11 @@ class SpecDecodeBaseProposer:
         """
         kv_cache_groups: dict[str, int] = {}
         for id, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
-            for layer_name in kv_cache_group.layer_names:
+            group_layer_names = kv_cache_group.worker_layer_names
+            assert group_layer_names is not None, (
+                "worker_layer_names must be set by workers"
+            )
+            for layer_name in group_layer_names:
                 kv_cache_groups[layer_name] = id
         assert (
             len(

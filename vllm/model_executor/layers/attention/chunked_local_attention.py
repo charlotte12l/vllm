@@ -5,9 +5,11 @@ import functools
 import torch
 
 from vllm.attention.layer import Attention
-from vllm.config import CacheConfig
+from vllm.config import CacheConfig, ParallelConfig
+from vllm.config.model_arch import KVCacheModelConfig
 from vllm.config.vllm import VllmConfig
 from vllm.model_executor.layers.quantization import QuantizationConfig
+from vllm.utils.torch_utils import resolve_kv_cache_dtype
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -119,12 +121,23 @@ class ChunkedLocalAttention(Attention):
             attn_backend=attn_backend,
         )
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        assert self.attention_chunk_size
+    @classmethod
+    def get_kv_cache_spec(
+        cls,
+        kv_cache_config: KVCacheModelConfig,
+        cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
+        model_dtype: torch.dtype,
+        layer_type: str,
+    ) -> KVCacheSpec:
+        kv_dtype = resolve_kv_cache_dtype(cache_config.cache_dtype, model_dtype)
+        tp_size = parallel_config.tensor_parallel_size
+        num_kv_heads = kv_cache_config.get_num_kv_heads_per_tp(tp_size)
+
         return ChunkedLocalAttentionSpec(
-            block_size=vllm_config.cache_config.block_size,
-            num_kv_heads=self.num_kv_heads,
-            head_size=self.head_size,
-            dtype=self.kv_cache_torch_dtype,
-            attention_chunk_size=self.attention_chunk_size,
+            block_size=cache_config.block_size,
+            num_kv_heads=num_kv_heads,
+            head_size=kv_cache_config.head_size,
+            attention_chunk_size=kv_cache_config.attention_chunk_size,
+            dtype=kv_dtype,
         )

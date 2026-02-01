@@ -28,11 +28,24 @@ from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheConfig,
     KVCacheGroupSpec,
+    KVCacheSpec,
 )
 from vllm.v1.request import Request
 from vllm.v1.structured_output import StructuredOutputManager
 
 EOS_TOKEN_ID = 50256
+
+
+def make_kv_cache_group_spec(
+    layer_names: list[str],
+    kv_cache_spec: KVCacheSpec,
+) -> KVCacheGroupSpec:
+    """Create a KVCacheGroupSpec for tests with sequential global indices."""
+    return KVCacheGroupSpec(
+        kv_cache_spec=kv_cache_spec,
+        global_layer_indices=list(range(len(layer_names))),
+        worker_layer_names=layer_names,
+    )
 
 
 def mock_kv(matched_tokens: int, is_async: bool):
@@ -144,7 +157,7 @@ def create_scheduler(
         num_blocks=num_blocks,  # A large number of blocks to hold all requests
         kv_cache_tensors=[],
         kv_cache_groups=[
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer"],
                 FullAttentionSpec(
                     block_size=block_size,

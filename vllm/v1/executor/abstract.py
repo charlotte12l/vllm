@@ -20,6 +20,7 @@ from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.engine import ReconfigureDistributedRequest
 from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
+from vllm.v1.worker.gpu.attn_utils import get_kv_cache_specs_from_config
 from vllm.v1.worker.worker_base import WorkerBase
 
 if TYPE_CHECKING:
@@ -125,8 +126,9 @@ class Executor(ABC):
     def determine_available_memory(self) -> list[int]:  # in bytes
         return self.collective_rpc("determine_available_memory")
 
-    def get_kv_cache_specs(self) -> list[dict[str, KVCacheSpec]]:
-        return self.collective_rpc("get_kv_cache_spec")
+    def get_kv_cache_specs(self) -> list[KVCacheSpec]:
+        """Get KV cache specs from config (no RPC needed)."""
+        return get_kv_cache_specs_from_config(self.vllm_config)
 
     @overload
     def collective_rpc(

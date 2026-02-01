@@ -290,12 +290,18 @@ def add_kv_sharing_layers_to_kv_cache_groups(
     """
     layer_to_kv_cache_group: dict[str, KVCacheGroupSpec] = {}
     for kv_cache_group in kv_cache_groups:
-        for layer_name in kv_cache_group.layer_names:
+        group_layer_names = kv_cache_group.worker_layer_names
+        assert group_layer_names is not None, (
+            "worker_layer_names must be set by workers"
+        )
+        for layer_name in group_layer_names:
             layer_to_kv_cache_group[layer_name] = kv_cache_group
 
     for layer_name, target_layer_name in shared_kv_cache_layers.items():
         tgt_kv_cache_group = layer_to_kv_cache_group[target_layer_name]
-        tgt_kv_cache_group.layer_names.append(layer_name)
+        tgt_layer_names = tgt_kv_cache_group.worker_layer_names
+        assert tgt_layer_names is not None, "worker_layer_names must be set by workers"
+        tgt_layer_names.append(layer_name)
 
         if runner_only_attn_layers is not None:
             runner_only_attn_layers.add(layer_name)

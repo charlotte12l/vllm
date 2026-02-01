@@ -45,7 +45,7 @@ from vllm.utils.mem_utils import MemorySnapshot, format_gib, memory_profiling
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.engine import ReconfigureDistributedRequest, ReconfigureRankType
-from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.outputs import (
     AsyncModelRunnerOutput,
     DraftTokenIds,
@@ -376,9 +376,6 @@ class Worker(WorkerBase):
         tp_rank = get_tp_group().rank_in_group
         return {tp_rank: metadata}
 
-    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
-        return self.model_runner.get_kv_cache_spec()
-
     def update_max_model_len(self, max_model_len: int) -> None:
         """Update max_model_len after auto-fit to GPU memory.
 
@@ -393,7 +390,13 @@ class Worker(WorkerBase):
         logger.debug("Updated max_model_len to %d", max_model_len)
 
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
-        """Allocate GPU KV cache with the specified kv_cache_config."""
+        """Allocate GPU KV cache with the specified kv_cache_config.
+
+        This method resolves layer indices to actual layer names using
+        static_forward_context before passing to model_runner.
+        """
+        # Resolve layer indices to layer names
+        kv_cache_config = self._resolve_layer_names(kv_cache_config)
 
         # Init kv cache connector here, because it requires
         # `kv_cache_config`.
@@ -410,6 +413,94 @@ class Worker(WorkerBase):
                 self.model_runner.initialize_kv_cache(kv_cache_config)
         else:
             self.model_runner.initialize_kv_cache(kv_cache_config)
+
+    def _resolve_layer_names(self, kv_cache_config: KVCacheConfig) -> KVCacheConfig:
+        """Resolve layer indices to actual layer names using static_forward_context.
+
+        The KVCacheConfig from EngineCore uses layer_indices instead of layer_names.
+        Workers resolve these indices to actual names from static_forward_context.
+
+        Args:
+            kv_cache_config: Config with layer_indices set in groups
+
+        Returns:
+            Config with layer_names resolved from static_forward_context
+        """
+
+        from vllm.v1.kv_cache_interface import KVCacheGroupSpec, KVCacheTensor
+
+        # Get layer names from static_forward_context
+        ctx = self.vllm_config.compilation_config.static_forward_context
+        all_layer_names = list(ctx.keys())
+
+        if not all_layer_names:
+            # No layers in context - return as-is
+            return kv_cache_config
+
+        # Create index to name mapping
+        # For PP, workers only have a subset of layers
+        # The layer names in static_forward_context are already filtered
+        # to this worker's layers
+        index_to_name: dict[int, str] = {}
+
+        # Parse placeholder names to get indices and map to real names
+        # Placeholder format: __layer_idx_{idx}__
+        for group in kv_cache_config.kv_cache_groups:
+            # Map each index to the corresponding layer name
+            # Layer names in ctx are in order for this worker
+            for i, idx in enumerate(group.global_layer_indices):
+                if i < len(all_layer_names):
+                    index_to_name[idx] = all_layer_names[i]
+
+        # If we couldn't map indices, fall back to using indices directly
+        # This handles the case where worker_layer_names is already set
+        if not index_to_name and any(
+            g.worker_layer_names for g in kv_cache_config.kv_cache_groups
+        ):
+            return kv_cache_config
+
+        # Create new config with resolved layer names
+        new_groups: list[KVCacheGroupSpec] = []
+        for group in kv_cache_config.kv_cache_groups:
+            if group.worker_layer_names:
+                # Already has names - use as-is
+                new_groups.append(group)
+            else:
+                # Resolve indices to names
+                layer_names = [
+                    index_to_name.get(idx, f"__layer_idx_{idx}__")
+                    for idx in group.global_layer_indices
+                ]
+                new_groups.append(
+                    KVCacheGroupSpec(
+                        kv_cache_spec=group.kv_cache_spec,
+                        global_layer_indices=group.global_layer_indices,
+                        worker_layer_names=layer_names,
+                    )
+                )
+
+        # Resolve placeholder names in tensors
+        new_tensors: list[KVCacheTensor] = []
+        for tensor in kv_cache_config.kv_cache_tensors:
+            resolved_names = []
+            for name in tensor.shared_by:
+                if name.startswith("__layer_idx_") and name.endswith("__"):
+                    try:
+                        idx = int(name[12:-2])  # Extract index from placeholder
+                        resolved_names.append(index_to_name.get(idx, name))
+                    except ValueError:
+                        resolved_names.append(name)
+                else:
+                    resolved_names.append(name)
+            new_tensors.append(
+                KVCacheTensor(size=tensor.size, shared_by=resolved_names)
+            )
+
+        return KVCacheConfig(
+            num_blocks=kv_cache_config.num_blocks,
+            kv_cache_tensors=new_tensors,
+            kv_cache_groups=new_groups,
+        )
 
     def compile_or_warm_up_model(self) -> None:
         warmup_sizes = []

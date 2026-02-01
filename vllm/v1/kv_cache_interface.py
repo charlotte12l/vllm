@@ -394,40 +394,38 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
         return max_num_pages * self.page_size_bytes
 
     @classmethod
-    def is_uniform_type(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> bool:
+    def is_uniform_type(cls, kv_cache_specs: list[KVCacheSpec]) -> bool:
         """
-        Whether all layers have the same type of KV cache spec.
+        Whether all layers in a list have the same type of KV cache spec.
         """
-        block_sizes = set(spec.block_size for spec in kv_cache_specs.values())
+        if not kv_cache_specs:
+            return True
+        block_sizes = set(spec.block_size for spec in kv_cache_specs)
         if len(block_sizes) > 1:
             # Different block sizes, not uniform.
             return False
-        one_spec = next(iter(kv_cache_specs.values()))
+        one_spec = kv_cache_specs[0]
         if isinstance(one_spec, FullAttentionSpec):
-            return all(
-                isinstance(spec, FullAttentionSpec) for spec in kv_cache_specs.values()
-            )
+            return all(isinstance(spec, FullAttentionSpec) for spec in kv_cache_specs)
         elif isinstance(one_spec, CrossAttentionSpec):
-            return all(
-                isinstance(spec, CrossAttentionSpec) for spec in kv_cache_specs.values()
-            )
+            return all(isinstance(spec, CrossAttentionSpec) for spec in kv_cache_specs)
         elif isinstance(one_spec, SlidingWindowSpec):
             return all(
                 isinstance(spec, SlidingWindowSpec)
                 and spec.sliding_window == one_spec.sliding_window
-                for spec in kv_cache_specs.values()
+                for spec in kv_cache_specs
             )
         elif isinstance(one_spec, ChunkedLocalAttentionSpec):
             return all(
                 isinstance(spec, ChunkedLocalAttentionSpec)
                 and spec.attention_chunk_size == one_spec.attention_chunk_size
-                for spec in kv_cache_specs.values()
+                for spec in kv_cache_specs
             )
         elif isinstance(one_spec, MambaSpec):
             return all(
                 isinstance(spec, MambaSpec)
                 and spec.num_speculative_blocks == one_spec.num_speculative_blocks
-                for spec in kv_cache_specs.values()
+                for spec in kv_cache_specs
             )
         else:
             # NOTE(Chen): Please add new branches for new KV cache spec types.
@@ -436,14 +434,22 @@ class UniformTypeKVCacheSpecs(KVCacheSpec):
             )
 
     @classmethod
-    def from_specs(cls, kv_cache_specs: dict[str, KVCacheSpec]) -> Self | None:
+    def from_specs(cls, kv_cache_specs: list[KVCacheSpec]) -> Self | None:
         """
-        Return a SameTypeKVCacheSpecs object if all layers have the same type
+        Return a UniformTypeKVCacheSpecs object if all layers have the same type
         of KV cache spec. Return None if not.
+
+        Creates placeholder layer names based on index for internal storage.
         """
+        if not kv_cache_specs:
+            return None
         if cls.is_uniform_type(kv_cache_specs):
-            block_size = next(iter(kv_cache_specs.values())).block_size
-            return cls(block_size=block_size, kv_cache_specs=kv_cache_specs)
+            block_size = kv_cache_specs[0].block_size
+            # Create dict with placeholder names for internal storage
+            specs_dict = {
+                f"__layer_idx_{i}__": spec for i, spec in enumerate(kv_cache_specs)
+            }
+            return cls(block_size=block_size, kv_cache_specs=specs_dict)
         else:
             return None
 
@@ -463,12 +469,27 @@ class KVCacheGroupSpec:
     """
     Represents a group of model layers that share the same KV cache block table.
     These layers are regarded as one layer in the KV cache manager.
+
+    Attributes:
+        kv_cache_spec: The KV cache spec for this group.
+        global_layer_indices: Global model layer indices (0 to N-1).
+            Always set, used by scheduler for counting and grouping.
+        worker_layer_names: Actual layer names on this worker.
+            Resolved during worker init, used for KV cache binding.
     """
 
-    # The names of model layers in this group
-    layer_names: list[str]
     # The KV cache spec of this manager layer
     kv_cache_spec: KVCacheSpec
+    # Global model layer indices - always required, used by scheduler
+    global_layer_indices: list[int]
+    # Worker-local layer names - resolved during worker initialization
+    # Maps global_layer_indices to actual layer names from static_forward_context
+    worker_layer_names: list[str] | None = None
+
+    @property
+    def num_layers(self) -> int:
+        """Number of layers in this group."""
+        return len(self.global_layer_indices)
 
 
 @dataclass

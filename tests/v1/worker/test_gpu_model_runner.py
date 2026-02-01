@@ -36,6 +36,7 @@ from vllm.v1.kv_cache_interface import (
     KVCacheTensor,
 )
 from vllm.v1.sample.metadata import SamplingMetadata
+from vllm.v1.worker.gpu.attn_utils import get_kv_cache_specs_from_config
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.utils import AttentionGroup
@@ -43,6 +44,15 @@ from vllm.v1.worker.utils import AttentionGroup
 BLOCK_SIZE = 16
 NUM_BLOCKS = 10
 DEVICE = current_platform.device_type
+
+
+def make_kv_cache_group_spec(layer_names, kv_cache_spec):
+    """Create a KVCacheGroupSpec for tests with sequential global indices."""
+    return KVCacheGroupSpec(
+        kv_cache_spec=kv_cache_spec,
+        global_layer_indices=list(range(len(layer_names))),
+        worker_layer_names=layer_names,
+    )
 
 
 def initialize_kv_cache(runner: GPUModelRunner):
@@ -61,9 +71,7 @@ def initialize_kv_cache(runner: GPUModelRunner):
         kv_cache_tensors=[
             KVCacheTensor(size=tensor_size, shared_by=["layer.0"]),
         ],
-        kv_cache_groups=[
-            KVCacheGroupSpec(layer_names=["layer.0"], kv_cache_spec=attn_spec)
-        ],
+        kv_cache_groups=[make_kv_cache_group_spec(["layer.0"], attn_spec)],
     )
     runner.kv_cache_config = kv_cache_config
     runner.input_batch = InputBatch(
@@ -654,7 +662,18 @@ def test_init_kv_cache_without_kv_sharing(default_vllm_config):
     vllm_config.model_config.max_model_len = 3_000_000
     vllm_ctx = vllm_config.compilation_config.static_forward_context
     runner = GPUModelRunner(vllm_config, DEVICE)
-    kv_cache_spec = runner.get_kv_cache_spec()
+
+    # Build kv_cache_spec directly from layer attributes
+    # (since we're using manually created layers, not a real model)
+    kv_cache_spec = {}
+    for layer_name in [layer_0, layer_1]:
+        attn_layer = vllm_ctx[layer_name]
+        kv_cache_spec[layer_name] = FullAttentionSpec(
+            block_size=vllm_config.cache_config.block_size,
+            num_kv_heads=attn_layer.num_kv_heads,
+            head_size=attn_layer.head_size,
+            dtype=runner.kv_cache_dtype,
+        )
     assert len(kv_cache_spec) == 2
     assert len(runner.shared_kv_cache_layers) == 0
 
@@ -690,9 +709,9 @@ def test_init_kv_cache_without_kv_sharing(default_vllm_config):
 
     # check layer 1 added to kv cache group's layer names
     assert len(kv_cache_config.kv_cache_groups) == 1
-    assert len(kv_cache_config.kv_cache_groups[0].layer_names) == 2
-    assert kv_cache_config.kv_cache_groups[0].layer_names[0] == layer_0
-    assert kv_cache_config.kv_cache_groups[0].layer_names[1] == layer_1
+    assert len(kv_cache_config.kv_cache_groups[0].worker_layer_names) == 2
+    assert kv_cache_config.kv_cache_groups[0].worker_layer_names[0] == layer_0
+    assert kv_cache_config.kv_cache_groups[0].worker_layer_names[1] == layer_1
 
 
 def test_init_kv_cache_with_kv_sharing_valid(default_vllm_config):
@@ -722,10 +741,20 @@ def test_init_kv_cache_with_kv_sharing_valid(default_vllm_config):
     vllm_config.model_config.max_model_len = 3_000_000
     vllm_ctx = vllm_config.compilation_config.static_forward_context
     runner = GPUModelRunner(vllm_config, DEVICE)
-    kv_cache_spec = runner.get_kv_cache_spec()
+
+    # Build kv_cache_spec directly from layer attributes
+    # Only layer_0 gets a spec since layer_1 shares with it
+    attn_layer = vllm_ctx[layer_0]
+    kv_cache_spec = {
+        layer_0: FullAttentionSpec(
+            block_size=vllm_config.cache_config.block_size,
+            num_kv_heads=attn_layer.num_kv_heads,
+            head_size=attn_layer.head_size,
+            dtype=runner.kv_cache_dtype,
+        )
+    }
     assert len(kv_cache_spec) == 1
     assert layer_0 in kv_cache_spec
-    assert runner.shared_kv_cache_layers[layer_1] == layer_0
 
     available_memory = 20 * GiB_bytes
     # page size for layer 0's kv_cache_spec is 32KB
@@ -753,6 +782,9 @@ def test_init_kv_cache_with_kv_sharing_valid(default_vllm_config):
     runner.initialize_kv_cache(kv_cache_config)
     kv_cache_config_after_init = runner.kv_cache_config
 
+    # Check that shared_kv_cache_layers was populated during initialize_kv_cache
+    assert runner.shared_kv_cache_layers[layer_1] == layer_0
+
     layer_0_kv = vllm_ctx[layer_0].kv_cache[0]
     layer_1_kv = vllm_ctx[layer_1].kv_cache[0]
     # check layer 1 kv cache shares memory with layer 0
@@ -760,9 +792,13 @@ def test_init_kv_cache_with_kv_sharing_valid(default_vllm_config):
 
     # check layer 1 added to kv cache group's layer names
     assert len(kv_cache_config_after_init.kv_cache_groups) == 1
-    assert len(kv_cache_config_after_init.kv_cache_groups[0].layer_names) == 2
-    assert kv_cache_config_after_init.kv_cache_groups[0].layer_names[0] == layer_0
-    assert kv_cache_config_after_init.kv_cache_groups[0].layer_names[1] == layer_1
+    assert len(kv_cache_config_after_init.kv_cache_groups[0].worker_layer_names) == 2
+    assert (
+        kv_cache_config_after_init.kv_cache_groups[0].worker_layer_names[0] == layer_0
+    )
+    assert (
+        kv_cache_config_after_init.kv_cache_groups[0].worker_layer_names[1] == layer_1
+    )
 
 
 @pytest.mark.skipif(
@@ -859,11 +895,13 @@ def test_hybrid_attention_mamba_tensor_shapes():
         vllm_ctx = vllm_config.compilation_config.static_forward_context
 
         runner = GPUModelRunner(vllm_config, DEVICE)
-        kv_cache_spec = runner.get_kv_cache_spec()
+
+        # Compute kv_cache_spec from config (returns list of specs)
+        kv_cache_specs = get_kv_cache_specs_from_config(vllm_config)
 
         available_memory = 5 * GiB_bytes
         kv_cache_config = get_kv_cache_configs(
-            vllm_config, [kv_cache_spec], [available_memory]
+            vllm_config, kv_cache_specs, [available_memory]
         )[0]
         runner.initialize_kv_cache(kv_cache_config)
 
@@ -1078,9 +1116,7 @@ def test_hybrid_cache_integration(default_vllm_config, dist_init):
         kv_cache_tensors=[
             KVCacheTensor(size=tensor_size, shared_by=["layer.0"]),
         ],
-        kv_cache_groups=[
-            KVCacheGroupSpec(layer_names=["layer.0"], kv_cache_spec=attn_spec)
-        ],
+        kv_cache_groups=[make_kv_cache_group_spec(["layer.0"], attn_spec)],
     )
     runner.kv_cache_config = kv_cache_config
 

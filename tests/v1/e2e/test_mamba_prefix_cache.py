@@ -196,7 +196,7 @@ def get_fake_execute_model_fn(original_execute_model_fn: Callable):
         mamba_group_id = mamba_group_ids[0]
         mamba_layer_name = self.kv_cache_config.kv_cache_groups[
             mamba_group_id
-        ].layer_names[0]
+        ].worker_layer_names[0]
         nonlocal last_num_computed_tokens
         if len(scheduler_output.scheduled_cached_reqs.req_ids) > 0:
             num_computed_tokens = (
@@ -263,7 +263,7 @@ def get_fake_process_mamba_fn(
             mamba_group_id = mamba_group_ids[0]
             mamba_layer_name = kv_cache_config.kv_cache_groups[
                 mamba_group_id
-            ].layer_names[0]
+            ].worker_layer_names[0]
             mamba_kv_cache = forward_context[mamba_layer_name].kv_cache[0][-1]
             mamba_block_table = input_batch.block_table.block_tables[
                 mamba_group_id

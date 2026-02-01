@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from __future__ import annotations
+
 from typing import final
 
 import torch
@@ -9,6 +11,8 @@ from transformers import PretrainedConfig
 
 from vllm import envs
 from vllm.config.model_arch import (
+    KVCacheModelConfig,
+    KVSharingConfig,
     ModelArchitectureConfig,
 )
 from vllm.config.utils import getattr_iter
@@ -241,6 +245,30 @@ class ModelArchConfigConvertorBase:
             derived_max_model_len = tmp_max_len
         return derived_max_model_len, max_len_key
 
+    def get_kv_cache_model_config(self) -> KVCacheModelConfig:
+        """
+        Extract KV cache related model configuration from HF config.
+
+        This creates a KVCacheModelConfig containing all model-architecture-derived
+        parameters needed for KV cache spec creation. It does NOT include
+        cache_config or parallel_config parameters.
+
+        Override this in model-specific converters for special cases
+        (MLA, Mamba, encoder-decoder, etc.)
+        """
+        layer_types = getattr(self.hf_text_config, "layer_types", None)
+
+        return KVCacheModelConfig(
+            total_num_kv_heads=self.get_total_num_kv_heads(),
+            head_size=self.get_head_size(),
+            num_hidden_layers=self.get_num_hidden_layers(),
+            layer_types=tuple(layer_types) if layer_types else None,
+            sliding_window=getattr(self.hf_text_config, "sliding_window", None),
+            attention_chunk_size=getattr(
+                self.hf_text_config, "attention_chunk_size", None
+            ),
+        )
+
     def convert(self) -> ModelArchitectureConfig:
         model_arch_config = ModelArchitectureConfig(
             architectures=self.get_architectures(),
@@ -256,17 +284,79 @@ class ModelArchConfigConvertorBase:
             quantization_config=self.get_quantization_config(),
             is_deepseek_mla=self.is_deepseek_mla(),
             derived_max_model_len_and_key=self.derive_max_model_len_and_key(),
+            kv_cache_config=self.get_kv_cache_model_config(),
         )
 
         return model_arch_config
 
 
 class MambaModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    """Converter for Mamba state-space models."""
+
     def get_head_size(self) -> int:
         return 0
 
     def get_total_num_kv_heads(self) -> int:
         return 0
+
+    def get_kv_cache_model_config(self) -> KVCacheModelConfig:
+        """Override to include Mamba-specific parameters."""
+        config = self.hf_text_config
+
+        # Build layer_types tuple for all mamba layers
+        num_layers = self.get_num_hidden_layers()
+        layer_types = tuple("mamba" for _ in range(num_layers))
+
+        return KVCacheModelConfig(
+            total_num_kv_heads=0,
+            head_size=0,
+            num_hidden_layers=num_layers,
+            layer_types=layer_types,
+            # Mamba-specific parameters
+            mamba_intermediate_size=getattr(config, "intermediate_size", None),
+            mamba_state_size=getattr(config, "state_size", None),
+            mamba_conv_kernel=getattr(config, "conv_kernel", None),
+            mamba_num_heads=getattr(config, "num_heads", None),
+            mamba_head_dim=getattr(config, "head_dim", None),
+            mamba_num_groups=getattr(config, "n_groups", None),
+            # Mamba models use "backbone" prefix
+            model_prefix="backbone",
+        )
+
+
+class WhisperModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    """Converter for Whisper encoder-decoder models."""
+
+    def get_kv_cache_model_config(self) -> KVCacheModelConfig:
+        """Override to include encoder-decoder specific parameters."""
+        return KVCacheModelConfig(
+            total_num_kv_heads=self.get_total_num_kv_heads(),
+            head_size=self.get_head_size(),
+            num_hidden_layers=self.get_num_hidden_layers(),
+            is_encoder_decoder=True,
+            num_encoder_layers=getattr(self.hf_config, "encoder_layers", None),
+            num_decoder_layers=getattr(self.hf_config, "decoder_layers", None),
+            block_pool_size=getattr(self.hf_config, "block_pool_size", None),
+        )
+
+
+class DeepSeekMLAModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    """Converter for DeepSeek models with Multi-Latent Attention (MLA)."""
+
+    def get_kv_cache_model_config(self) -> KVCacheModelConfig:
+        """Override to include MLA-specific parameters."""
+        config = self.hf_text_config
+
+        return KVCacheModelConfig(
+            total_num_kv_heads=self.get_total_num_kv_heads(),
+            head_size=self.get_head_size(),
+            num_hidden_layers=self.get_num_hidden_layers(),
+            # MLA-specific parameters
+            kv_lora_rank=getattr(config, "kv_lora_rank", None),
+            qk_rope_head_dim=getattr(config, "qk_rope_head_dim", None),
+            # Indexer parameters (for DeepSeek V3 speculative decoding)
+            index_head_dim=getattr(config, "index_head_dim", None),
+        )
 
 
 class TerratorchModelArchConfigConvertor(ModelArchConfigConvertorBase):
@@ -286,8 +376,32 @@ class MedusaModelArchConfigConvertor(ModelArchConfigConvertorBase):
 
 
 class Zamba2ModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    """Converter for Zamba2 hybrid models (Mamba + Attention)."""
+
     def get_head_size(self) -> int:
         return getattr(self.hf_text_config, "attention_head_dim", 0)
+
+    def get_kv_cache_model_config(self) -> KVCacheModelConfig:
+        """Override to include hybrid model parameters."""
+        config = self.hf_text_config
+        layer_types = getattr(config, "layer_types", None)
+
+        return KVCacheModelConfig(
+            total_num_kv_heads=self.get_total_num_kv_heads(),
+            head_size=self.get_head_size(),
+            num_hidden_layers=self.get_num_hidden_layers(),
+            layer_types=tuple(layer_types) if layer_types else None,
+            sliding_window=getattr(config, "sliding_window", None),
+            # Mamba-specific parameters for hybrid layers
+            mamba_intermediate_size=getattr(config, "mamba_d_state", None),
+            mamba_state_size=getattr(config, "mamba_d_state", None),
+            mamba_conv_kernel=getattr(config, "mamba_d_conv", None),
+            mamba_num_heads=getattr(config, "mamba_n_heads", None),
+            mamba_head_dim=getattr(config, "mamba_d_head", None),
+            mamba_num_groups=getattr(config, "mamba_n_groups", None),
+            # Hybrid models use "backbone" prefix
+            model_prefix="backbone",
+        )
 
 
 class FalconModelArchConfigConvertor(ModelArchConfigConvertorBase):
@@ -374,9 +488,71 @@ class PanguUltraMoeMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
         return getattr(self.hf_text_config, "num_nextn_predict_layers", 0)
 
 
+class OpenPanguSinkModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    """Converter for OpenPangu models with sink attention."""
+
+    def get_head_size(self) -> int:
+        qk_nope_dim = getattr(self.hf_text_config, "qk_nope_dim", None)
+        qk_rope_dim = getattr(self.hf_text_config, "qk_rope_dim", None)
+        if qk_nope_dim is not None and qk_rope_dim is not None:
+            return qk_nope_dim + qk_rope_dim
+        return super().get_head_size()
+
+    def _uses_sink_attention(self) -> bool:
+        """Check if this model uses sink attention."""
+        param_sink_number = getattr(self.hf_text_config, "param_sink_number", 0)
+        return param_sink_number is not None and param_sink_number > 0
+
+    def get_kv_cache_model_config(self) -> KVCacheModelConfig:
+        """Override to include sink attention parameters."""
+        config = self.hf_text_config
+        num_layers = self.get_num_hidden_layers()
+
+        # Check if sink attention is enabled
+        layer_types: tuple[str, ...] | None
+        if self._uses_sink_attention():
+            layer_types = tuple("sink_attention" for _ in range(num_layers))
+        else:
+            # Fall back to base layer types
+            base_layer_types = getattr(config, "layer_types", None)
+            layer_types = tuple(base_layer_types) if base_layer_types else None
+
+        return KVCacheModelConfig(
+            total_num_kv_heads=self.get_total_num_kv_heads(),
+            head_size=self.get_head_size(),
+            head_size_v=getattr(config, "v_channels", None),
+            num_hidden_layers=num_layers,
+            layer_types=layer_types,
+            sliding_window=getattr(config, "sliding_window", None),
+            sink_len=getattr(config, "param_sink_number", None),
+        )
+
+
 class LongCatFlashMTPModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_num_hidden_layers(self) -> int:
         return getattr(self.hf_text_config, "num_nextn_predict_layers", 1)
+
+
+class Gemma3nModelArchConfigConvertor(ModelArchConfigConvertorBase):
+    """Converter for Gemma3n models with KV sharing support."""
+
+    def get_kv_cache_model_config(self) -> KVCacheModelConfig:
+        """Override to include KV sharing configuration."""
+        config = self.hf_text_config
+        layer_types = getattr(config, "layer_types", None)
+
+        # Create KV sharing config from HF config
+        kv_sharing_config = KVSharingConfig.from_hf_config(config)
+
+        return KVCacheModelConfig(
+            total_num_kv_heads=self.get_total_num_kv_heads(),
+            head_size=self.get_head_size(),
+            num_hidden_layers=self.get_num_hidden_layers(),
+            layer_types=tuple(layer_types) if layer_types else None,
+            sliding_window=getattr(config, "sliding_window", None),
+            attention_chunk_size=getattr(config, "attention_chunk_size", None),
+            kv_sharing_config=kv_sharing_config,
+        )
 
 
 # hf_config.model_type -> convertor class
@@ -399,4 +575,16 @@ MODEL_ARCH_CONFIG_CONVERTORS = {
     "ernie_mtp": ErnieMTPModelArchConfigConvertor,
     "pangu_ultra_moe_mtp": PanguUltraMoeMTPModelArchConfigConvertor,
     "longcat_flash_mtp": LongCatFlashMTPModelArchConfigConvertor,
+    # Encoder-decoder models
+    "whisper": WhisperModelArchConfigConvertor,
+    # MLA models (DeepSeek)
+    "deepseek_v2": DeepSeekMLAModelArchConfigConvertor,
+    "deepseek_v3": DeepSeekMLAModelArchConfigConvertor,
+    "deepseek_v32": DeepSeekMLAModelArchConfigConvertor,
+    # Gemma3n with KV sharing
+    "gemma3n": Gemma3nModelArchConfigConvertor,
+    # OpenPangu models with potential sink attention
+    "pangu_embedded": OpenPanguSinkModelArchConfigConvertor,
+    "pangu_pro_moe": OpenPanguSinkModelArchConfigConvertor,
+    "pangu_pro_moe_v2": OpenPanguSinkModelArchConfigConvertor,
 }

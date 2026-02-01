@@ -77,7 +77,8 @@ def collect_mamba_copy_meta(
     for mamba_group_id in mamba_group_ids:
         block_ids = req_state.block_ids[mamba_group_id]
         dest_block_id = block_ids[dest_block_idx]
-        layer_names = kv_cache_config.kv_cache_groups[mamba_group_id].layer_names
+        layer_names = kv_cache_config.kv_cache_groups[mamba_group_id].worker_layer_names
+        assert layer_names is not None, "worker_layer_names must be set by workers"
         for layer_name in layer_names:
             attention = forward_context[layer_name]
             kv_caches: list[torch.Tensor] = attention.kv_cache[0]
