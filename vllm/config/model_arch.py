@@ -86,9 +86,14 @@ class KVCacheModelConfig:
     """Size of value head (if different from head_size)."""
 
     # Per-layer attention types
-    layer_types: tuple[str, ...] | None = None
-    """Per-layer attention type: 'full_attention', 'sliding_attention', 
-    'chunked_attention', 'linear_attention', etc."""
+    layer_types: tuple[tuple[str, ...], ...] | None = None
+    """Per-layer attention types. Each tuple contains the attention types
+    for one physical layer.
+    Examples:
+      - Decoder-only: (("full_attention",), ("full_attention",), ...)
+      - Hybrid: (("full_attention",), ("mamba",), ("full_attention",), ...)
+      - Encoder-decoder: (("full_attention", "cross_attention"), ...)
+    """
 
     # Sliding window attention
     sliding_window: int | None = None
@@ -146,11 +151,6 @@ class KVCacheModelConfig:
     block_pool_size: int | None = None
     """Block pool size for audio models with block pooling attention."""
 
-    # Per-layer attention roles for encoder-decoder models
-    layer_roles: tuple[str, ...] | None = None
-    """Per-layer attention role: 'self', 'cross', 'encoder'.
-    Only used for encoder-decoder models."""
-
     # KV sharing configuration
     kv_sharing_config: KVSharingConfig | None = None
     """Configuration for KV sharing between layers."""
@@ -159,27 +159,11 @@ class KVCacheModelConfig:
     model_prefix: str = "model"
     """Prefix for layer names (e.g., 'model', 'backbone', 'language_model.model')."""
 
-    def get_layer_type(self, layer_idx: int) -> str:
-        """Get the attention type for a specific layer."""
+    def get_layer_types(self, layer_idx: int) -> tuple[str, ...]:
+        """Get the attention types for a specific physical layer."""
         if self.layer_types is None:
-            return "full_attention"
+            return ("full_attention",)
         return self.layer_types[layer_idx]
-
-    def get_layer_role(self, layer_idx: int) -> str:
-        """Get the attention role ('self' or 'cross') for a specific layer."""
-        if self.layer_roles is not None:
-            return self.layer_roles[layer_idx]
-        # For encoder-decoder: even=self, odd=cross
-        if self.is_encoder_decoder:
-            return "self" if layer_idx % 2 == 0 else "cross"
-        return "self"
-
-    def get_num_kv_cache_layers(self) -> int:
-        """Get total number of KV cache layers for this model."""
-        if self.is_encoder_decoder:
-            num_decoder_layers = self.num_decoder_layers or self.num_hidden_layers
-            return num_decoder_layers * 2  # self + cross per layer
-        return self.num_hidden_layers
 
     def get_num_kv_heads_per_tp(self, tp_size: int) -> int:
         """Get number of KV heads per tensor parallel rank.

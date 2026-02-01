@@ -256,13 +256,19 @@ class ModelArchConfigConvertorBase:
         Override this in model-specific converters for special cases
         (MLA, Mamba, encoder-decoder, etc.)
         """
-        layer_types = getattr(self.hf_text_config, "layer_types", None)
+        hf_layer_types = getattr(self.hf_text_config, "layer_types", None)
+
+        # Convert flat layer_types to nested tuple format
+        # Each physical layer gets a single-element tuple
+        layer_types: tuple[tuple[str, ...], ...] | None = None
+        if hf_layer_types:
+            layer_types = tuple((t,) for t in hf_layer_types)
 
         return KVCacheModelConfig(
             total_num_kv_heads=self.get_total_num_kv_heads(),
             head_size=self.get_head_size(),
             num_hidden_layers=self.get_num_hidden_layers(),
-            layer_types=tuple(layer_types) if layer_types else None,
+            layer_types=layer_types,
             sliding_window=getattr(self.hf_text_config, "sliding_window", None),
             attention_chunk_size=getattr(
                 self.hf_text_config, "attention_chunk_size", None
@@ -304,8 +310,9 @@ class MambaModelArchConfigConvertor(ModelArchConfigConvertorBase):
         config = self.hf_text_config
 
         # Build layer_types tuple for all mamba layers
+        # Each physical layer has a single mamba attention type
         num_layers = self.get_num_hidden_layers()
-        layer_types = tuple("mamba" for _ in range(num_layers))
+        layer_types = tuple(("mamba",) for _ in range(num_layers))
 
         return KVCacheModelConfig(
             total_num_kv_heads=0,
@@ -329,13 +336,23 @@ class WhisperModelArchConfigConvertor(ModelArchConfigConvertorBase):
 
     def get_kv_cache_model_config(self) -> KVCacheModelConfig:
         """Override to include encoder-decoder specific parameters."""
+        num_decoder_layers = getattr(self.hf_config, "decoder_layers", None)
+        if num_decoder_layers is None:
+            num_decoder_layers = self.get_num_hidden_layers()
+
+        # Each decoder layer has self-attention and cross-attention
+        layer_types = tuple(
+            ("full_attention", "cross_attention") for _ in range(num_decoder_layers)
+        )
+
         return KVCacheModelConfig(
             total_num_kv_heads=self.get_total_num_kv_heads(),
             head_size=self.get_head_size(),
-            num_hidden_layers=self.get_num_hidden_layers(),
+            num_hidden_layers=num_decoder_layers,
+            layer_types=layer_types,
             is_encoder_decoder=True,
             num_encoder_layers=getattr(self.hf_config, "encoder_layers", None),
-            num_decoder_layers=getattr(self.hf_config, "decoder_layers", None),
+            num_decoder_layers=num_decoder_layers,
             block_pool_size=getattr(self.hf_config, "block_pool_size", None),
         )
 
@@ -384,13 +401,18 @@ class Zamba2ModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_kv_cache_model_config(self) -> KVCacheModelConfig:
         """Override to include hybrid model parameters."""
         config = self.hf_text_config
-        layer_types = getattr(config, "layer_types", None)
+        hf_layer_types = getattr(config, "layer_types", None)
+
+        # Convert flat layer_types to nested tuple format
+        layer_types: tuple[tuple[str, ...], ...] | None = None
+        if hf_layer_types:
+            layer_types = tuple((t,) for t in hf_layer_types)
 
         return KVCacheModelConfig(
             total_num_kv_heads=self.get_total_num_kv_heads(),
             head_size=self.get_head_size(),
             num_hidden_layers=self.get_num_hidden_layers(),
-            layer_types=tuple(layer_types) if layer_types else None,
+            layer_types=layer_types,
             sliding_window=getattr(config, "sliding_window", None),
             # Mamba-specific parameters for hybrid layers
             mamba_intermediate_size=getattr(config, "mamba_d_state", None),
@@ -509,13 +531,16 @@ class OpenPanguSinkModelArchConfigConvertor(ModelArchConfigConvertorBase):
         num_layers = self.get_num_hidden_layers()
 
         # Check if sink attention is enabled
-        layer_types: tuple[str, ...] | None
+        layer_types: tuple[tuple[str, ...], ...] | None
         if self._uses_sink_attention():
-            layer_types = tuple("sink_attention" for _ in range(num_layers))
+            layer_types = tuple(("sink_attention",) for _ in range(num_layers))
         else:
             # Fall back to base layer types
             base_layer_types = getattr(config, "layer_types", None)
-            layer_types = tuple(base_layer_types) if base_layer_types else None
+            if base_layer_types:
+                layer_types = tuple((t,) for t in base_layer_types)
+            else:
+                layer_types = None
 
         return KVCacheModelConfig(
             total_num_kv_heads=self.get_total_num_kv_heads(),
@@ -539,7 +564,12 @@ class Gemma3nModelArchConfigConvertor(ModelArchConfigConvertorBase):
     def get_kv_cache_model_config(self) -> KVCacheModelConfig:
         """Override to include KV sharing configuration."""
         config = self.hf_text_config
-        layer_types = getattr(config, "layer_types", None)
+        hf_layer_types = getattr(config, "layer_types", None)
+
+        # Convert flat layer_types to nested tuple format
+        layer_types: tuple[tuple[str, ...], ...] | None = None
+        if hf_layer_types:
+            layer_types = tuple((t,) for t in hf_layer_types)
 
         # Create KV sharing config from HF config
         kv_sharing_config = KVSharingConfig.from_hf_config(config)
@@ -548,7 +578,7 @@ class Gemma3nModelArchConfigConvertor(ModelArchConfigConvertorBase):
             total_num_kv_heads=self.get_total_num_kv_heads(),
             head_size=self.get_head_size(),
             num_hidden_layers=self.get_num_hidden_layers(),
-            layer_types=tuple(layer_types) if layer_types else None,
+            layer_types=layer_types,
             sliding_window=getattr(config, "sliding_window", None),
             attention_chunk_size=getattr(config, "attention_chunk_size", None),
             kv_sharing_config=kv_sharing_config,

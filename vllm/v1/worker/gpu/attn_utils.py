@@ -218,12 +218,6 @@ _SPEC_CREATORS: dict[str, SpecCreator] = {
     "sink_attention": StaticSinkAttention.get_kv_cache_spec,
 }
 
-# Map layer role to layer type
-_ROLE_TO_TYPE: dict[str, str] = {
-    "self": "full_attention",
-    "cross": "cross_attention",
-}
-
 
 def get_kv_cache_specs_from_config(vllm_config: VllmConfig) -> list[KVCacheSpec]:
     """Get KV cache specs from config without RPC or model loading."""
@@ -232,16 +226,14 @@ def get_kv_cache_specs_from_config(vllm_config: VllmConfig) -> list[KVCacheSpec]
         return []
 
     if kv_cache_config.total_num_kv_heads == 0:
-        has_mamba = (
-            kv_cache_config.layer_types is not None
-            and "mamba" in kv_cache_config.layer_types
+        has_mamba = kv_cache_config.layer_types is not None and any(
+            "mamba" in types for types in kv_cache_config.layer_types
         )
         if not has_mamba:
             return []
 
-    num_kv_layers = kv_cache_config.get_num_kv_cache_layers()
     is_mla = vllm_config.model_config.model_arch_config.is_deepseek_mla
-    is_encoder_decoder = kv_cache_config.is_encoder_decoder
+    num_physical_layers = kv_cache_config.num_hidden_layers
 
     kv_sharing_config = kv_cache_config.kv_sharing_config
     sharing_layers = (
@@ -255,39 +247,41 @@ def get_kv_cache_specs_from_config(vllm_config: VllmConfig) -> list[KVCacheSpec]
     model_dtype = vllm_config.model_config.dtype
 
     specs: list[KVCacheSpec] = []
+    global_idx = 0
 
-    for layer_idx in range(num_kv_layers):
-        if layer_idx in sharing_layers:
-            continue
+    for physical_idx in range(num_physical_layers):
+        layer_types = kv_cache_config.get_layer_types(physical_idx)
 
-        if is_encoder_decoder:
-            role = kv_cache_config.get_layer_role(layer_idx)
-            layer_type = _ROLE_TO_TYPE[role]
-        else:
-            layer_type = kv_cache_config.get_layer_type(layer_idx)
+        for layer_type in layer_types:
+            if global_idx in sharing_layers:
+                global_idx += 1
+                continue
 
             if is_mla and layer_type in ("full_attention", "attention"):
                 layer_type = "mla_attention"
 
             if layer_type == "linear_attention":
+                global_idx += 1
                 continue
 
-        creator = _SPEC_CREATORS.get(layer_type)
-        if creator is None:
-            logger.warning(
-                "Unknown layer type '%s' at layer %d, skipping",
-                layer_type,
-                layer_idx,
-            )
-            continue
+            creator = _SPEC_CREATORS.get(layer_type)
+            if creator is None:
+                logger.warning(
+                    "Unknown layer type '%s' at physical layer %d, skipping",
+                    layer_type,
+                    physical_idx,
+                )
+                global_idx += 1
+                continue
 
-        spec = creator(
-            kv_cache_config,
-            cache_config,
-            parallel_config,
-            model_dtype,
-            layer_type,
-        )
-        specs.append(spec)
+            spec = creator(
+                kv_cache_config,
+                cache_config,
+                parallel_config,
+                model_dtype,
+                layer_type,
+            )
+            specs.append(spec)
+            global_idx += 1
 
     return specs
