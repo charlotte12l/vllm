@@ -734,6 +734,37 @@ def check_enough_kv_cache_memory(
         )
 
 
+def create_kv_cache_group_specs(
+    kv_cache_specs: list[KVCacheSpec], grouped_indices: list[list[int]]
+) -> list[KVCacheGroupSpec]:
+    """
+    Create KVCacheGroupSpec object for each kv cache group.
+    The layers in the same group should share the same KVCacheSpec.
+
+    Args:
+        kv_cache_specs:
+            List of KVCacheSpec indexed by global layer index.
+        grouped_indices:
+            A list of kv cache groups, where each element is a list of layer
+            indices that belong to the same group and should share the same
+            KVCacheSpec.
+    Returns:
+        A list of KVCacheGroupSpec objects, one for each group.
+    """
+    kv_cache_groups = []
+    for indices_one_group in grouped_indices:
+        layer_specs = [kv_cache_specs[idx] for idx in indices_one_group]
+        merged_layer_spec = layer_specs[0].merge(layer_specs)
+        kv_cache_groups.append(
+            KVCacheGroupSpec(
+                kv_cache_spec=merged_layer_spec,
+                global_layer_indices=indices_one_group,
+                worker_layer_names=None,
+            )
+        )
+    return kv_cache_groups
+
+
 def is_kv_cache_spec_uniform(kv_cache_specs: list[KVCacheSpec]) -> bool:
     """
     Whether all layers in the given KVCacheSpec list have the same KV cache spec.
@@ -821,6 +852,48 @@ def get_uniform_page_size(kv_cache_specs: Iterable[KVCacheSpec]) -> int:
     return page_sizes.pop()
 
 
+def _get_kv_cache_groups_uniform_spec(
+    kv_cache_specs: list[KVCacheSpec],
+) -> list[KVCacheGroupSpec]:
+    """
+    Generates the KV cache configuration for a model with the same KV cache
+    spec for all layers.
+
+    Args:
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index
+
+    Returns:
+        The generated KVCacheGroupSpecs
+    """
+    return create_kv_cache_group_specs(
+        kv_cache_specs, [list(range(len(kv_cache_specs)))]
+    )
+
+
+def _get_kv_cache_groups_uniform_type(
+    kv_cache_specs: list[KVCacheSpec],
+    spec: UniformTypeKVCacheSpecs,
+) -> list[KVCacheGroupSpec]:
+    """
+    Generates the KV cache configuration for a model with one type of KV cache
+    but different hidden sizes. All layers are merged into one group.
+
+    Args:
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index
+        spec: The UniformTypeKVCacheSpecs of the model
+
+    Returns:
+        The generated KVCacheGroupSpecs
+    """
+    return [
+        KVCacheGroupSpec(
+            kv_cache_spec=spec,
+            global_layer_indices=list(range(len(kv_cache_specs))),
+            worker_layer_names=None,
+        )
+    ]
+
+
 def is_kv_cache_page_size_uniform(kv_cache_specs: list[KVCacheSpec]) -> bool:
     """
     Whether all layers in the given KVCacheSpec list have the same page size.
@@ -878,6 +951,135 @@ def unify_kv_cache_spec_page_size(
 def is_kv_cache_type_attention_free(kv_cache_specs: list[KVCacheSpec]) -> bool:
     # kv_cache_specs is an empty list for attention free models
     return not kv_cache_specs
+
+
+def _get_kv_cache_groups_uniform_page_size(
+    kv_cache_specs: list[KVCacheSpec],
+) -> list[KVCacheGroupSpec]:
+    """
+    Generates the KV cache groups for hybrid models with multiple
+    attention types but still with a uniform page size (physical memory per
+    block per layer) for all layers.
+
+    Detailed explanation about kv cache management of hybrid models:
+    The layers in the models are repeated with some patterns, e.g., a model
+    with 10 full attention layers and 20 sliding window attention layers can be
+    regarded as repeating the pattern (1 * full, 2 * sw) 10 times.
+    The KVCacheManager allocates different block tables for each of the 3 layers
+    in the pattern, and repeats each of them 10 times to generate the
+    block_table for the 30 layers in the model.
+    Therefore, we can group the layers in the model into 3 kv_cache_groups, each
+    of which contains 10 layers in the model.
+    The KVCacheManager allocates the block_table for each group based on its
+    kv_cache spec, and the model runner applies the block table to each layer
+    in the group.
+
+    Args:
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index
+    Returns:
+        The generated KVCacheGroupSpecs
+    """
+    # Group all layer indices by kv_cache_spec.
+    same_type_indices: dict[KVCacheSpec, list[int]] = defaultdict(list)
+    for idx, spec in enumerate(kv_cache_specs):
+        same_type_indices[spec].append(idx)
+
+    # Split each group into smaller groups, to make the number of layers in each
+    # group identical. Add padding to the last group of each type if necessary.
+    min_num_layers = min(len(indices) for indices in same_type_indices.values())
+    group_size = min_num_layers
+    max_num_layers = max(len(indices) for indices in same_type_indices.values())
+    if max_num_layers < min_num_layers * 1.25:
+        # If the number of layers is not much larger than the minimum,
+        # use the maximum to avoid too many padding layers.
+        group_size = max_num_layers
+
+    grouped_indices: list[list[int]] = []
+    for indices in same_type_indices.values():
+        num_padding_layers = group_size - len(indices) % group_size
+        if num_padding_layers != group_size:
+            logger.warning(
+                "Add %d padding layers, may waste at most %.2f%% KV cache memory",
+                num_padding_layers,
+                num_padding_layers / len(indices) * 100,
+            )
+        num_groups = cdiv(len(indices), group_size)
+        # In PP case, assign indices[i::num_groups] to the i-th group
+        # to avoid memory waste from uneven distribution.
+        for i in range(num_groups):
+            grouped_indices.append(indices[i::num_groups])
+
+    return create_kv_cache_group_specs(kv_cache_specs, grouped_indices)
+
+
+def get_kv_cache_config_from_groups(
+    vllm_config: VllmConfig,
+    kv_cache_groups: list[KVCacheGroupSpec],
+    available_memory: int,
+) -> KVCacheConfig:
+    """
+    Generate KVCacheConfig from groups that use global_layer_indices.
+
+    This function works with groups that have global_layer_indices set
+    and worker_layer_names=None. Workers resolve layer names during
+    initialization.
+
+    Args:
+        vllm_config: The global VllmConfig
+        kv_cache_groups: Groups with global_layer_indices set
+        available_memory: Memory available for KV cache in bytes
+
+    Returns:
+        KVCacheConfig with groups using layer indices
+    """
+    if not kv_cache_groups:
+        return KVCacheConfig(
+            num_blocks=0,
+            kv_cache_tensors=[],
+            kv_cache_groups=[],
+        )
+
+    # Calculate page size and number of blocks
+    total_page_size = sum(
+        group.kv_cache_spec.page_size_bytes * group.num_layers
+        for group in kv_cache_groups
+    )
+    num_layers = sum(group.num_layers for group in kv_cache_groups)
+
+    if total_page_size == 0 or num_layers == 0:
+        return KVCacheConfig(
+            num_blocks=0,
+            kv_cache_tensors=[],
+            kv_cache_groups=kv_cache_groups,
+        )
+
+    page_size_per_layer = total_page_size // num_layers
+    num_blocks = get_num_blocks(
+        vllm_config, num_layers, available_memory, page_size_per_layer
+    )
+
+    # Create tensor specs for each group
+    kv_cache_tensors: list[KVCacheTensor] = []
+    for group in kv_cache_groups:
+        layer_indices = group.global_layer_indices
+        if not layer_indices:
+            continue
+
+        # Use placeholder names for tensor allocation
+        # Workers will resolve to real names
+        tensor_size = (
+            group.kv_cache_spec.page_size_bytes * len(layer_indices) * num_blocks
+        )
+        placeholder_names = [f"__layer_idx_{idx}__" for idx in layer_indices]
+        kv_cache_tensors.append(
+            KVCacheTensor(size=tensor_size, shared_by=placeholder_names)
+        )
+
+    return KVCacheConfig(
+        num_blocks=num_blocks,
+        kv_cache_tensors=kv_cache_tensors,
+        kv_cache_groups=kv_cache_groups,
+    )
 
 
 def unify_hybrid_kv_cache_specs(
@@ -985,25 +1187,12 @@ def get_kv_cache_groups(
         # KV cache of all layers are the same, which is true for
         # most models. Allocate the same amount of memory for
         # each layer.
-        merged_spec = kv_cache_specs[0].merge(kv_cache_specs)
-        return [
-            KVCacheGroupSpec(
-                kv_cache_spec=merged_spec,
-                global_layer_indices=list(range(len(kv_cache_specs))),
-                worker_layer_names=None,
-            )
-        ]
+        return _get_kv_cache_groups_uniform_spec(kv_cache_specs)
     elif uniform_spec := UniformTypeKVCacheSpecs.from_specs(kv_cache_specs):
         # All layers need the same number of token slots (e.g., all layers are
         # full attention, or all layers are sliding window attention with the
         # same window size). Put all layers into one group.
-        return [
-            KVCacheGroupSpec(
-                kv_cache_spec=uniform_spec,
-                global_layer_indices=list(range(len(kv_cache_specs))),
-                worker_layer_names=None,
-            )
-        ]
+        return _get_kv_cache_groups_uniform_type(kv_cache_specs, uniform_spec)
 
     # As KVCacheManager can only allocate memory of one size, we need to unify
     # the page size of the layers. For cases cannot be unified, this function
@@ -1015,32 +1204,7 @@ def get_kv_cache_groups(
     # have the same physical memory per block per layer. Split the layers
     # into groups with the same number of layers, and thus same total page
     # size.
-    # Group indices by spec type
-    same_type_indices: dict[KVCacheSpec, list[int]] = defaultdict(list)
-    for idx, spec in enumerate(kv_cache_specs):
-        same_type_indices[spec].append(idx)
-
-    # Split each group into smaller groups to make the number of layers identical
-    min_num_layers = min(len(indices) for indices in same_type_indices.values())
-    group_size = min_num_layers
-    max_num_layers = max(len(indices) for indices in same_type_indices.values())
-    if max_num_layers < min_num_layers * 1.25:
-        group_size = max_num_layers
-
-    groups: list[KVCacheGroupSpec] = []
-    for spec, indices in same_type_indices.items():
-        num_groups = cdiv(len(indices), group_size)
-        for i in range(num_groups):
-            group_indices = indices[i::num_groups]
-            groups.append(
-                KVCacheGroupSpec(
-                    kv_cache_spec=spec,
-                    global_layer_indices=group_indices,
-                    worker_layer_names=None,
-                )
-            )
-
-    return groups
+    return _get_kv_cache_groups_uniform_page_size(kv_cache_specs)
 
 
 def generate_scheduler_kv_cache_config(
@@ -1327,76 +1491,6 @@ def get_kv_cache_configs(
                 _report_kv_cache_config(vllm_config, kv_cache_config)
 
     return kv_cache_configs
-
-
-def get_kv_cache_config_from_groups(
-    vllm_config: VllmConfig,
-    kv_cache_groups: list[KVCacheGroupSpec],
-    available_memory: int,
-) -> KVCacheConfig:
-    """
-    Generate KVCacheConfig from groups that use global_layer_indices.
-
-    This function works with groups that have global_layer_indices set
-    and worker_layer_names=None. Workers resolve layer names during
-    initialization.
-
-    Args:
-        vllm_config: The global VllmConfig
-        kv_cache_groups: Groups with global_layer_indices set
-        available_memory: Memory available for KV cache in bytes
-
-    Returns:
-        KVCacheConfig with groups using layer indices
-    """
-    if not kv_cache_groups:
-        return KVCacheConfig(
-            num_blocks=0,
-            kv_cache_tensors=[],
-            kv_cache_groups=[],
-        )
-
-    # Calculate page size and number of blocks
-    total_page_size = sum(
-        group.kv_cache_spec.page_size_bytes * group.num_layers
-        for group in kv_cache_groups
-    )
-    num_layers = sum(group.num_layers for group in kv_cache_groups)
-
-    if total_page_size == 0 or num_layers == 0:
-        return KVCacheConfig(
-            num_blocks=0,
-            kv_cache_tensors=[],
-            kv_cache_groups=kv_cache_groups,
-        )
-
-    page_size_per_layer = total_page_size // num_layers
-    num_blocks = get_num_blocks(
-        vllm_config, num_layers, available_memory, page_size_per_layer
-    )
-
-    # Create tensor specs for each group
-    kv_cache_tensors: list[KVCacheTensor] = []
-    for group in kv_cache_groups:
-        layer_indices = group.global_layer_indices
-        if not layer_indices:
-            continue
-
-        # Use placeholder names for tensor allocation
-        # Workers will resolve to real names
-        tensor_size = (
-            group.kv_cache_spec.page_size_bytes * len(layer_indices) * num_blocks
-        )
-        placeholder_names = [f"__layer_idx_{idx}__" for idx in layer_indices]
-        kv_cache_tensors.append(
-            KVCacheTensor(size=tensor_size, shared_by=placeholder_names)
-        )
-
-    return KVCacheConfig(
-        num_blocks=num_blocks,
-        kv_cache_tensors=kv_cache_tensors,
-        kv_cache_groups=kv_cache_groups,
-    )
 
 
 class BlockHashListWithBlockSize:
