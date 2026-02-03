@@ -65,7 +65,9 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import compute_iteration_details
-from vllm.v1.worker.gpu.attn_utils import get_kv_cache_specs_from_config
+from vllm.v1.worker.gpu.attn_utils import (
+    get_kv_cache_specs_from_config,
+)
 from vllm.version import __version__ as VLLM_VERSION
 
 logger = init_logger(__name__)

@@ -31,6 +31,7 @@ from vllm.v1.attention.backend import (
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     KVCacheConfig,
+    KVCacheGroupSpec,
     KVCacheSpec,
 )
 from vllm.v1.worker.utils import bind_kv_cache
@@ -285,3 +286,30 @@ def get_kv_cache_specs_from_config(vllm_config: VllmConfig) -> list[KVCacheSpec]
             global_idx += 1
 
     return specs
+
+
+def get_kv_cache_groups_from_config(
+    vllm_config: VllmConfig,
+) -> list[KVCacheGroupSpec]:
+    """Get KV cache groups from config without RPC or model loading.
+
+    This is the preferred function for scheduler initialization.
+    Returns grouped specs with num_layers count - exactly what scheduler needs.
+
+    Args:
+        vllm_config: The global VllmConfig
+
+    Returns:
+        List of KVCacheGroupSpec with kv_cache_spec and num_layers set.
+        worker_layer_names is None (workers resolve names during init).
+    """
+    # Import here to avoid circular dependency
+    from vllm.v1.core.kv_cache_utils import get_kv_cache_groups
+
+    # First get flat list of specs
+    kv_cache_specs = get_kv_cache_specs_from_config(vllm_config)
+    if not kv_cache_specs:
+        return []
+
+    # Then group them by type
+    return get_kv_cache_groups(vllm_config, kv_cache_specs)
