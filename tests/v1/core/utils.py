@@ -40,10 +40,10 @@ def make_kv_cache_group_spec(
     layer_names: list[str],
     kv_cache_spec: KVCacheSpec,
 ) -> KVCacheGroupSpec:
-    """Create a KVCacheGroupSpec for tests with sequential global indices."""
+    """Create a KVCacheGroupSpec for tests with num_layers."""
     return KVCacheGroupSpec(
         kv_cache_spec=kv_cache_spec,
-        global_layer_indices=list(range(len(layer_names))),
+        num_layers=len(layer_names),
         worker_layer_names=layer_names,
     )
 

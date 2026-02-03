@@ -137,15 +137,15 @@ def new_sliding_window_spec(
 
 
 def make_kv_cache_group_spec(layer_names, kv_cache_spec):
-    """Create a KVCacheGroupSpec for tests with sequential global indices.
+    """Create a KVCacheGroupSpec for tests with num_layers.
 
-    For test purposes, we use sequential indices (0, 1, 2, ...) based on the
-    number of layers. This is suitable for tests that create KVCacheGroupSpec
+    For test purposes, we create a group with num_layers set to the count.
+    This is suitable for tests that create KVCacheGroupSpec
     for testing other components like KVCacheManager, scheduler config, etc.
     """
     return KVCacheGroupSpec(
         kv_cache_spec=kv_cache_spec,
-        global_layer_indices=list(range(len(layer_names))),
+        num_layers=len(layer_names),
         worker_layer_names=layer_names,
     )
 
@@ -713,7 +713,7 @@ def test_get_kv_cache_configs_multiple_workers():
 
     The new API takes list[KVCacheSpec] indexed by global layer index.
     All workers receive the same global config with:
-    - global_layer_indices as position indices (0, 1, 2, ...)
+    - num_layers set to the count of layers in each group
     - worker_layer_names=None (workers resolve layer names themselves)
     - shared_by contains placeholder names like __layer_idx_0__
     """
@@ -745,7 +745,7 @@ def test_get_kv_cache_configs_multiple_workers():
         kv_cache_groups=[
             KVCacheGroupSpec(
                 kv_cache_spec=ref_kv_cache_spec,
-                global_layer_indices=[0, 1],
+                num_layers=2,
                 worker_layer_names=None,
             ),
         ],
@@ -771,7 +771,7 @@ def test_get_kv_cache_configs_multiple_workers():
     assert kv_cache_configs[0] == expected_config
     assert kv_cache_configs[1] == expected_config
 
-    # 3 layers: all workers get the same config with 3 layer indices.
+    # 3 layers: all workers get the same config with 3 layers.
     kv_cache_specs_3 = [new_kv_cache_spec(), new_kv_cache_spec(), new_kv_cache_spec()]
     kv_cache_configs = get_kv_cache_configs(
         vllm_config,
@@ -792,7 +792,7 @@ def test_get_kv_cache_configs_multiple_workers():
         kv_cache_groups=[
             KVCacheGroupSpec(
                 kv_cache_spec=ref_kv_cache_spec,
-                global_layer_indices=[0, 1, 2],
+                num_layers=3,
                 worker_layer_names=None,
             ),
         ],
@@ -824,10 +824,10 @@ def test_get_kv_cache_configs_multiple_workers():
     # Check groups - should have 2 groups
     assert len(kv_cache_configs[0].kv_cache_groups) == 2
     # First group: FullAttention layers
-    assert kv_cache_configs[0].kv_cache_groups[0].global_layer_indices == [0, 1]
+    assert kv_cache_configs[0].kv_cache_groups[0].num_layers == 2
     assert kv_cache_configs[0].kv_cache_groups[0].worker_layer_names is None
     # Second group: SlidingWindow layers
-    assert kv_cache_configs[0].kv_cache_groups[1].global_layer_indices == [2, 3]
+    assert kv_cache_configs[0].kv_cache_groups[1].num_layers == 2
     assert kv_cache_configs[0].kv_cache_groups[1].worker_layer_names is None
     # All workers get the same config
     assert kv_cache_configs[0] == kv_cache_configs[1]
@@ -844,7 +844,7 @@ def test_get_kv_cache_configs_multiple_workers():
     assert len(kv_cache_configs) == 1
     assert kv_cache_configs[0].num_blocks == 10
     assert len(kv_cache_configs[0].kv_cache_groups) == 1
-    assert kv_cache_configs[0].kv_cache_groups[0].global_layer_indices == [0]
+    assert kv_cache_configs[0].kv_cache_groups[0].num_layers == 1
     assert kv_cache_configs[0].kv_cache_groups[0].worker_layer_names is None
     assert kv_cache_configs[0].kv_cache_tensors[0].shared_by == ["__layer_idx_0__"]
 

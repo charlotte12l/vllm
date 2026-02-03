@@ -5797,12 +5797,11 @@ class GPUModelRunner(
                 "Only support one encoder-only attention spec now"
             )
             spec, layer_names = encoder_only_attn_specs.popitem()
-            # For encoder-only attention, use sequential indices as global indices
-            global_indices = list(range(len(layer_names)))
+            # For encoder-only attention, add a group with num_layers
             self.kv_cache_config.kv_cache_groups.append(
                 KVCacheGroupSpec(
                     kv_cache_spec=spec,
-                    global_layer_indices=global_indices,
+                    num_layers=len(layer_names),
                     worker_layer_names=layer_names,
                 )
             )

@@ -758,7 +758,7 @@ def create_kv_cache_group_specs(
         kv_cache_groups.append(
             KVCacheGroupSpec(
                 kv_cache_spec=merged_layer_spec,
-                global_layer_indices=indices_one_group,
+                num_layers=len(indices_one_group),
                 worker_layer_names=None,
             )
         )
@@ -888,7 +888,7 @@ def _get_kv_cache_groups_uniform_type(
     return [
         KVCacheGroupSpec(
             kv_cache_spec=spec,
-            global_layer_indices=list(range(len(kv_cache_specs))),
+            num_layers=len(kv_cache_specs),
             worker_layer_names=None,
         )
     ]
@@ -1018,19 +1018,18 @@ def get_kv_cache_config_from_groups(
     available_memory: int,
 ) -> KVCacheConfig:
     """
-    Generate KVCacheConfig from groups that use global_layer_indices.
+    Generate KVCacheConfig from groups with num_layers.
 
-    This function works with groups that have global_layer_indices set
-    and worker_layer_names=None. Workers resolve layer names during
-    initialization.
+    This function creates a config that workers will use to allocate KV cache.
+    Workers resolve layer names during initialization.
 
     Args:
         vllm_config: The global VllmConfig
-        kv_cache_groups: Groups with global_layer_indices set
+        kv_cache_groups: Groups with num_layers set
         available_memory: Memory available for KV cache in bytes
 
     Returns:
-        KVCacheConfig with groups using layer indices
+        KVCacheConfig with groups
     """
     if not kv_cache_groups:
         return KVCacheConfig(
@@ -1059,21 +1058,25 @@ def get_kv_cache_config_from_groups(
     )
 
     # Create tensor specs for each group
+    # Use placeholder names that workers will resolve
     kv_cache_tensors: list[KVCacheTensor] = []
+    global_layer_idx = 0
     for group in kv_cache_groups:
-        layer_indices = group.global_layer_indices
-        if not layer_indices:
+        if group.num_layers == 0:
             continue
 
         # Use placeholder names for tensor allocation
-        # Workers will resolve to real names
+        # Workers will resolve to real names based on their local layers
         tensor_size = (
-            group.kv_cache_spec.page_size_bytes * len(layer_indices) * num_blocks
+            group.kv_cache_spec.page_size_bytes * group.num_layers * num_blocks
         )
-        placeholder_names = [f"__layer_idx_{idx}__" for idx in layer_indices]
+        placeholder_names = [
+            f"__layer_idx_{global_layer_idx + i}__" for i in range(group.num_layers)
+        ]
         kv_cache_tensors.append(
             KVCacheTensor(size=tensor_size, shared_by=placeholder_names)
         )
+        global_layer_idx += group.num_layers
 
     return KVCacheConfig(
         num_blocks=num_blocks,
@@ -1165,15 +1168,15 @@ def get_kv_cache_groups(
     """
     Split the layers in the model into groups with the same KV cache spec.
 
-    This function works with specs indexed by global layer index (no layer
-    names). Workers will resolve layer indices to names during initialization.
+    This function groups specs by type and returns groups with num_layers set.
+    Workers will resolve layer names during initialization.
 
     Args:
         vllm_config: The global VllmConfig
         kv_cache_specs: List of KVCacheSpec indexed by global layer index
 
     Returns:
-        List of KVCacheGroupSpec with global_layer_indices set and
+        List of KVCacheGroupSpec with num_layers set and
         worker_layer_names=None (workers resolve names during initialization)
     """
     if not kv_cache_specs:

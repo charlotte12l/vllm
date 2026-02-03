@@ -1598,7 +1598,7 @@ def create_scheduler_with_priority(
                     head_size=1,
                     dtype=torch.float32,
                 ),
-                global_layer_indices=[0],
+                num_layers=1,
                 worker_layer_names=["layer"],
             )
         ],

@@ -470,26 +470,22 @@ class KVCacheGroupSpec:
     Represents a group of model layers that share the same KV cache block table.
     These layers are regarded as one layer in the KV cache manager.
 
-    Attributes:
-        kv_cache_spec: The KV cache spec for this group.
-        global_layer_indices: Global model layer indices (0 to N-1).
-            Always set, used by scheduler for counting and grouping.
-        worker_layer_names: Actual layer names on this worker.
-            Resolved during worker init, used for KV cache binding.
+    The scheduler only needs:
+    - kv_cache_spec: The spec type for this group
+    - num_layers: How many layers in this group
+
+    Workers additionally use:
+    - worker_layer_names: Actual layer names for KV cache binding
+      (resolved locally by workers, not passed from engine)
     """
 
     # The KV cache spec of this manager layer
     kv_cache_spec: KVCacheSpec
-    # Global model layer indices - always required, used by scheduler
-    global_layer_indices: list[int]
-    # Worker-local layer names - resolved during worker initialization
-    # Maps global_layer_indices to actual layer names from static_forward_context
+    # Number of layers in this group - used by scheduler for memory calculations
+    num_layers: int
+    # Worker-local layer names - resolved by workers during initialization
+    # Not passed from engine, workers compute this from static_forward_context
     worker_layer_names: list[str] | None = None
-
-    @property
-    def num_layers(self) -> int:
-        """Number of layers in this group."""
-        return len(self.global_layer_indices)
 
 
 @dataclass

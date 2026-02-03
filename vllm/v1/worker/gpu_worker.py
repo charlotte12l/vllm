@@ -415,16 +415,16 @@ class Worker(WorkerBase):
             self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def _resolve_layer_names(self, kv_cache_config: KVCacheConfig) -> KVCacheConfig:
-        """Resolve layer indices to actual layer names using static_forward_context.
+        """Resolve layer names for this worker using static_forward_context.
 
-        The KVCacheConfig from EngineCore uses layer_indices instead of layer_names.
-        Workers resolve these indices to actual names from static_forward_context.
+        The KVCacheConfig from EngineCore contains groups with num_layers count.
+        Workers resolve actual layer names from their static_forward_context.
 
         Args:
-            kv_cache_config: Config with layer_indices set in groups
+            kv_cache_config: Config with num_layers set in groups
 
         Returns:
-            Config with layer_names resolved from static_forward_context
+            Config with worker_layer_names resolved from static_forward_context
         """
 
         from vllm.v1.kv_cache_interface import KVCacheGroupSpec, KVCacheTensor
@@ -437,47 +437,39 @@ class Worker(WorkerBase):
             # No layers in context - return as-is
             return kv_cache_config
 
-        # Create index to name mapping
-        # For PP, workers only have a subset of layers
-        # The layer names in static_forward_context are already filtered
-        # to this worker's layers
-        index_to_name: dict[int, str] = {}
-
-        # Parse placeholder names to get indices and map to real names
-        # Placeholder format: __layer_idx_{idx}__
-        for group in kv_cache_config.kv_cache_groups:
-            # Map each index to the corresponding layer name
-            # Layer names in ctx are in order for this worker
-            for i, idx in enumerate(group.global_layer_indices):
-                if i < len(all_layer_names):
-                    index_to_name[idx] = all_layer_names[i]
-
-        # If we couldn't map indices, fall back to using indices directly
-        # This handles the case where worker_layer_names is already set
-        if not index_to_name and any(
-            g.worker_layer_names for g in kv_cache_config.kv_cache_groups
-        ):
+        # If all groups already have layer names, return as-is
+        if all(g.worker_layer_names for g in kv_cache_config.kv_cache_groups):
             return kv_cache_config
 
-        # Create new config with resolved layer names
+        # Distribute layer names across groups based on num_layers
+        # Layer names in ctx are in order for this worker
         new_groups: list[KVCacheGroupSpec] = []
+        layer_name_idx = 0
+
         for group in kv_cache_config.kv_cache_groups:
             if group.worker_layer_names:
                 # Already has names - use as-is
                 new_groups.append(group)
-            else:
-                # Resolve indices to names
-                layer_names = [
-                    index_to_name.get(idx, f"__layer_idx_{idx}__")
-                    for idx in group.global_layer_indices
-                ]
-                new_groups.append(
-                    KVCacheGroupSpec(
-                        kv_cache_spec=group.kv_cache_spec,
-                        global_layer_indices=group.global_layer_indices,
-                        worker_layer_names=layer_names,
-                    )
+                continue
+
+            # Assign layer names for this group
+            layer_names = all_layer_names[
+                layer_name_idx : layer_name_idx + group.num_layers
+            ]
+            layer_name_idx += group.num_layers
+
+            new_groups.append(
+                KVCacheGroupSpec(
+                    kv_cache_spec=group.kv_cache_spec,
+                    num_layers=group.num_layers,
+                    worker_layer_names=layer_names,
                 )
+            )
+
+        # Build index to name mapping for tensor resolution
+        index_to_name: dict[int, str] = {
+            idx: layer_name for idx, layer_name in enumerate(all_layer_names)
+        }
 
         # Resolve placeholder names in tensors
         new_tensors: list[KVCacheTensor] = []
