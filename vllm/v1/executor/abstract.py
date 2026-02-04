@@ -20,6 +20,7 @@ from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.engine import ReconfigureDistributedRequest
 from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
+from vllm.v1.worker.gpu.attn_utils import get_kv_cache_specs_from_config
 from vllm.v1.worker.worker_base import WorkerBase
 
 if TYPE_CHECKING:
@@ -115,6 +116,43 @@ class Executor(ABC):
         self.collective_rpc("initialize_from_config", args=(kv_cache_configs,))
         self.collective_rpc("compile_or_warm_up_model")
 
+    def profile_and_init_kv_cache(
+        self, kv_cache_groups: list
+    ) -> tuple[list[int], list[int], int]:
+        """Profile memory and initialize KV cache in a single RPC.
+
+        This combines memory profiling and KV cache initialization into a
+        single RPC call, reducing engine startup overhead.
+
+        Args:
+            kv_cache_groups: List of KVCacheGroupSpec from get_kv_cache_groups()
+                (with num_layers set, worker_layer_names=None - workers resolve)
+
+        Returns:
+            Tuple of:
+            - num_blocks_per_worker: List of num_blocks per worker
+            - available_memory_per_worker: List of available memory per worker
+              (for auto-fit max_model_len calculation)
+            - min_num_blocks: Minimum num_blocks across all workers
+              (scheduler uses this value)
+        """
+        # Each worker profiles memory, computes num_blocks, and initializes
+        # Returns list of (num_blocks, available_memory) tuples
+        results: list[tuple[int, int]] = self.collective_rpc(
+            "profile_and_init_kv_cache", args=(kv_cache_groups,)
+        )
+
+        # Warmup after KV cache is initialized
+        self.collective_rpc("compile_or_warm_up_model")
+
+        # Unpack results
+        num_blocks_per_worker = [r[0] for r in results]
+        available_memory_per_worker = [r[1] for r in results]
+
+        # Return min num_blocks for scheduler
+        min_num_blocks = min(num_blocks_per_worker) if num_blocks_per_worker else 0
+        return num_blocks_per_worker, available_memory_per_worker, min_num_blocks
+
     def register_failure_callback(self, callback: FailureCallback):  # noqa: B027
         """
         Register a function to be called if the executor enters a permanent
@@ -125,8 +163,9 @@ class Executor(ABC):
     def determine_available_memory(self) -> list[int]:  # in bytes
         return self.collective_rpc("determine_available_memory")
 
-    def get_kv_cache_specs(self) -> list[dict[str, KVCacheSpec]]:
-        return self.collective_rpc("get_kv_cache_spec")
+    def get_kv_cache_specs(self) -> list[KVCacheSpec]:
+        """Get KV cache specs from config (no RPC needed)."""
+        return get_kv_cache_specs_from_config(self.vllm_config)
 
     @overload
     def collective_rpc(

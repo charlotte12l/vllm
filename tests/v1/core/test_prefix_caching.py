@@ -88,12 +88,21 @@ def make_request(
     )
 
 
+def make_kv_cache_group_spec(layer_names, kv_cache_spec):
+    """Create a KVCacheGroupSpec for tests with num_layers."""
+    return KVCacheGroupSpec(
+        kv_cache_spec=kv_cache_spec,
+        num_layers=len(layer_names),
+        worker_layer_names=layer_names,
+    )
+
+
 def make_kv_cache_config(block_size: int, num_blocks: int) -> KVCacheConfig:
     return KVCacheConfig(
         num_blocks=num_blocks,
         kv_cache_tensors=[],
         kv_cache_groups=[
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer"],
                 FullAttentionSpec(
                     block_size=block_size,
@@ -128,7 +137,7 @@ def make_kv_cache_config_hybrid_model(
         num_blocks=num_blocks,
         kv_cache_tensors=[],
         kv_cache_groups=[
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer1"],
                 FullAttentionSpec(
                     block_size=block_size,
@@ -137,11 +146,11 @@ def make_kv_cache_config_hybrid_model(
                     dtype=torch.float32,
                 ),
             ),
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer2"],
                 second_spec,
             ),
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer3"],
                 second_spec,
             ),
@@ -171,7 +180,7 @@ def make_kv_cache_config_three_types(
         num_blocks=num_blocks,
         kv_cache_tensors=[],
         kv_cache_groups=[
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer1"],
                 FullAttentionSpec(
                     block_size=block_size,
@@ -180,7 +189,7 @@ def make_kv_cache_config_three_types(
                     dtype=torch.float32,
                 ),
             ),
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer2"],
                 SlidingWindowSpec(
                     block_size=block_size,
@@ -190,7 +199,7 @@ def make_kv_cache_config_three_types(
                     sliding_window=2 * block_size,
                 ),
             ),
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer3"],
                 third_spec,
             ),
@@ -521,7 +530,7 @@ def _make_hybrid_kv_cache_config(
     }
 
     kv_cache_groups = [
-        KVCacheGroupSpec([f"layer{i}"], spec_map[spec_type]())
+        make_kv_cache_group_spec([f"layer{i}"], spec_map[spec_type]())
         for i, spec_type in enumerate(spec_types)
     ]
 
@@ -1803,7 +1812,7 @@ def test_eagle_with_sliding_window():
         KVCacheConfig(
             num_blocks=10,
             kv_cache_tensors=[],
-            kv_cache_groups=[KVCacheGroupSpec(["layer"], sliding_window_spec)],
+            kv_cache_groups=[make_kv_cache_group_spec(["layer"], sliding_window_spec)],
         ),
         max_model_len=8192,
         enable_caching=True,
@@ -1863,7 +1872,7 @@ def test_different_block_size():
         num_blocks=100,
         kv_cache_tensors=[],
         kv_cache_groups=[
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer1"],
                 FullAttentionSpec(
                     block_size=block_size * 2,
@@ -1872,7 +1881,7 @@ def test_different_block_size():
                     dtype=torch.float16,
                 ),
             ),
-            KVCacheGroupSpec(
+            make_kv_cache_group_spec(
                 ["layer2"],
                 SlidingWindowSpec(
                     block_size=block_size,

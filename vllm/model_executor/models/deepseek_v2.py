@@ -36,6 +36,7 @@ from vllm._aiter_ops import rocm_aiter_ops
 from vllm.attention.layer import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ParallelConfig, VllmConfig, get_current_vllm_config
+from vllm.config.model_arch import KVCacheModelConfig
 from vllm.distributed import (
     get_ep_group,
     get_pp_group,
@@ -575,12 +576,29 @@ class DeepseekV32IndexerCache(torch.nn.Module, AttentionLayerBase):
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        return MLAAttentionSpec(  # Only has one vector instead of K + V
-            block_size=self.cache_config.block_size,
+    @classmethod
+    def get_kv_cache_spec(
+        cls,
+        kv_cache_config: KVCacheModelConfig,
+        cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
+        model_dtype: torch.dtype,
+        layer_type: str,
+    ) -> KVCacheSpec:
+        """Create KV cache spec for indexer layers.
+
+        The indexer uses MLAAttentionSpec with uint8 dtype for FP8 quantized
+        values and a computed head size that includes space for scales.
+        """
+        head_size = kv_cache_config.get_indexer_cache_head_size()
+        assert head_size is not None, (
+            "index_head_dim must be set in kv_cache_config for indexer layers"
+        )
+        return MLAAttentionSpec(
+            block_size=cache_config.block_size,
             num_kv_heads=1,
-            head_size=self.head_dim,
-            dtype=self.dtype,
+            head_size=head_size,
+            dtype=torch.uint8,
         )
 
     def forward(self): ...

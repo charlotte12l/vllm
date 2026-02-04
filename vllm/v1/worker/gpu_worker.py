@@ -45,7 +45,7 @@ from vllm.utils.mem_utils import MemorySnapshot, format_gib, memory_profiling
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.engine import ReconfigureDistributedRequest, ReconfigureRankType
-from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.outputs import (
     AsyncModelRunnerOutput,
     DraftTokenIds,
@@ -376,9 +376,6 @@ class Worker(WorkerBase):
         tp_rank = get_tp_group().rank_in_group
         return {tp_rank: metadata}
 
-    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
-        return self.model_runner.get_kv_cache_spec()
-
     def update_max_model_len(self, max_model_len: int) -> None:
         """Update max_model_len after auto-fit to GPU memory.
 
@@ -393,7 +390,13 @@ class Worker(WorkerBase):
         logger.debug("Updated max_model_len to %d", max_model_len)
 
     def initialize_from_config(self, kv_cache_config: KVCacheConfig) -> None:
-        """Allocate GPU KV cache with the specified kv_cache_config."""
+        """Allocate GPU KV cache with the specified kv_cache_config.
+
+        This method resolves layer indices to actual layer names using
+        static_forward_context before passing to model_runner.
+        """
+        # Resolve layer indices to layer names
+        kv_cache_config = self._resolve_layer_names(kv_cache_config)
 
         # Init kv cache connector here, because it requires
         # `kv_cache_config`.
@@ -410,6 +413,146 @@ class Worker(WorkerBase):
                 self.model_runner.initialize_kv_cache(kv_cache_config)
         else:
             self.model_runner.initialize_kv_cache(kv_cache_config)
+
+    def _resolve_layer_names(self, kv_cache_config: KVCacheConfig) -> KVCacheConfig:
+        """Resolve layer names for this worker using static_forward_context.
+
+        The KVCacheConfig from EngineCore contains groups with num_layers count.
+        Workers resolve actual layer names from their static_forward_context.
+
+        Args:
+            kv_cache_config: Config with num_layers set in groups
+
+        Returns:
+            Config with worker_layer_names resolved from static_forward_context
+        """
+
+        from vllm.v1.kv_cache_interface import KVCacheGroupSpec, KVCacheTensor
+
+        # Get layer names from static_forward_context
+        ctx = self.vllm_config.compilation_config.static_forward_context
+        all_layer_names = list(ctx.keys())
+
+        if not all_layer_names:
+            # No layers in context - return as-is
+            return kv_cache_config
+
+        # If all groups already have layer names, return as-is
+        if all(g.worker_layer_names for g in kv_cache_config.kv_cache_groups):
+            return kv_cache_config
+
+        # Distribute layer names across groups based on num_layers
+        # Layer names in ctx are in order for this worker
+        new_groups: list[KVCacheGroupSpec] = []
+        layer_name_idx = 0
+
+        for group in kv_cache_config.kv_cache_groups:
+            if group.worker_layer_names:
+                # Already has names - use as-is
+                new_groups.append(group)
+                continue
+
+            # Assign layer names for this group
+            layer_names = all_layer_names[
+                layer_name_idx : layer_name_idx + group.num_layers
+            ]
+            layer_name_idx += group.num_layers
+
+            new_groups.append(
+                KVCacheGroupSpec(
+                    kv_cache_spec=group.kv_cache_spec,
+                    num_layers=group.num_layers,
+                    worker_layer_names=layer_names,
+                )
+            )
+
+        # Build index to name mapping for tensor resolution
+        index_to_name: dict[int, str] = {
+            idx: layer_name for idx, layer_name in enumerate(all_layer_names)
+        }
+
+        # Resolve placeholder names in tensors
+        new_tensors: list[KVCacheTensor] = []
+        for tensor in kv_cache_config.kv_cache_tensors:
+            resolved_names = []
+            for name in tensor.shared_by:
+                if name.startswith("__layer_idx_") and name.endswith("__"):
+                    try:
+                        idx = int(name[12:-2])  # Extract index from placeholder
+                        resolved_names.append(index_to_name.get(idx, name))
+                    except ValueError:
+                        resolved_names.append(name)
+                else:
+                    resolved_names.append(name)
+            new_tensors.append(
+                KVCacheTensor(size=tensor.size, shared_by=resolved_names)
+            )
+
+        return KVCacheConfig(
+            num_blocks=kv_cache_config.num_blocks,
+            kv_cache_tensors=new_tensors,
+            kv_cache_groups=new_groups,
+        )
+
+    @torch.inference_mode()
+    def profile_and_init_kv_cache(
+        self,
+        kv_cache_groups: list,
+    ) -> tuple[int, int]:
+        """Profile memory and initialize KV cache in a single call.
+
+        This method combines memory profiling and KV cache initialization,
+        reducing the number of RPC calls needed during engine startup.
+
+        According to TL's design:
+        1. Profile available memory
+        2. Compute num_blocks locally based on this worker's available memory
+        3. Resolve layer names from static_forward_context
+        4. Allocate and bind KV cache tensors
+        5. Return num_blocks and available_memory for this worker
+
+        Args:
+            kv_cache_groups: List of KVCacheGroupSpec from engine
+                (with num_layers set, worker_layer_names=None)
+
+        Returns:
+            Tuple of (num_blocks, available_memory) for this worker.
+            Engine uses available_memory for auto-fit max_model_len calculation.
+        """
+        from vllm.v1.core.kv_cache_utils import get_kv_cache_config_from_groups
+        from vllm.v1.kv_cache_interface import KVCacheGroupSpec
+
+        # Convert list back to proper type if needed (for RPC serialization)
+        if kv_cache_groups and not isinstance(kv_cache_groups[0], KVCacheGroupSpec):
+            # Reconstruct from serialized data
+            kv_cache_groups = [
+                KVCacheGroupSpec(
+                    kv_cache_spec=g.kv_cache_spec,
+                    num_layers=g.num_layers,
+                    worker_layer_names=g.worker_layer_names,
+                )
+                for g in kv_cache_groups
+            ]
+
+        # Handle attention-free models (no KV cache needed)
+        if not kv_cache_groups:
+            # Still need to run profiling for model compilation
+            self.model_runner.profile_run()
+            return 0, 0
+
+        # Step 1: Profile available memory (reuse existing logic)
+        available_memory = self.determine_available_memory()
+
+        # Step 2: Compute num_blocks and create config locally
+        kv_cache_config = get_kv_cache_config_from_groups(
+            self.vllm_config, kv_cache_groups, available_memory
+        )
+
+        # Step 3: Resolve layer names and initialize KV cache
+        # (reuse existing initialize_from_config logic)
+        self.initialize_from_config(kv_cache_config)
+
+        return kv_cache_config.num_blocks, available_memory
 
     def compile_or_warm_up_model(self) -> None:
         warmup_sizes = []

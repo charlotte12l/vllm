@@ -5,8 +5,10 @@ from collections.abc import Iterable
 
 import torch
 
-from vllm.config import VllmConfig
+from vllm.config import CacheConfig, ParallelConfig
+from vllm.config.model_arch import KVCacheModelConfig
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.v1.attention.backend import AttentionBackend
 from vllm.v1.attention.selector import get_mamba_attn_backend
 from vllm.v1.kv_cache_interface import KVCacheSpec, MambaSpec
@@ -40,30 +42,65 @@ class MambaBase(AttentionLayerBase):
     def get_state_dtype(self) -> tuple[torch.dtype, ...]:
         pass
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec | None:
-        if (
-            vllm_config.speculative_config is not None
-            and vllm_config.model_config.hf_config.model_type not in ["qwen3_next"]
-        ):
-            raise NotImplementedError(
-                "Mamba with speculative decoding is not supported yet."
-            )
-        mamba_block_size = vllm_config.cache_config.mamba_block_size
-        page_size_padded = vllm_config.cache_config.mamba_page_size_padded
-        return MambaSpec(
-            shapes=self.get_state_shape(),
-            dtypes=self.get_state_dtype(),
-            block_size=mamba_block_size,
-            page_size_padded=page_size_padded,
-            mamba_type=self.mamba_type,
-            mamba_cache_mode=vllm_config.cache_config.mamba_cache_mode,
-            num_speculative_blocks=(
-                vllm_config.speculative_config.num_speculative_tokens
-                if vllm_config.speculative_config
-                else 0
-            ),
-        )
-
     def get_attn_backend(self) -> type[AttentionBackend]:
         """Get the attention backend class for this Mamba layer."""
         return get_mamba_attn_backend(self.mamba_type)
+
+    @classmethod
+    def get_kv_cache_spec(
+        cls,
+        kv_cache_config: KVCacheModelConfig,
+        cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
+        model_dtype: torch.dtype,
+        layer_type: str,
+    ) -> KVCacheSpec:
+        tp_size = parallel_config.tensor_parallel_size
+
+        # Determine mamba type and compute shapes
+        shapes: tuple[tuple[int, ...], ...]
+        dtypes: tuple[torch.dtype, ...]
+        if kv_cache_config.mamba_num_heads is not None:
+            # Mamba2
+            mamba_type = "mamba2"
+            assert kv_cache_config.mamba_intermediate_size is not None
+            assert kv_cache_config.mamba_head_dim is not None
+            assert kv_cache_config.mamba_state_size is not None
+            assert kv_cache_config.mamba_conv_kernel is not None
+            shapes = MambaStateShapeCalculator.mamba2_state_shape(
+                tp_world_size=tp_size,
+                intermediate_size=kv_cache_config.mamba_intermediate_size,
+                n_groups=kv_cache_config.mamba_num_groups or 1,
+                num_heads=kv_cache_config.mamba_num_heads,
+                head_dim=kv_cache_config.mamba_head_dim,
+                state_size=kv_cache_config.mamba_state_size,
+                conv_kernel=kv_cache_config.mamba_conv_kernel,
+            )
+            dtypes = (torch.float32,)
+        else:
+            # Mamba1
+            mamba_type = "mamba1"
+            assert kv_cache_config.mamba_intermediate_size is not None
+            assert kv_cache_config.mamba_state_size is not None
+            assert kv_cache_config.mamba_conv_kernel is not None
+            shapes = MambaStateShapeCalculator.mamba1_state_shape(
+                tp_world_size=tp_size,
+                intermediate_size=kv_cache_config.mamba_intermediate_size,
+                state_size=kv_cache_config.mamba_state_size,
+                conv_kernel=kv_cache_config.mamba_conv_kernel,
+            )
+            dtypes = (torch.float32, torch.float32)
+
+        # Get mamba block size with default
+        mamba_block_size = cache_config.mamba_block_size
+        if mamba_block_size is None:
+            mamba_block_size = 1  # Default block size
+
+        return MambaSpec(
+            block_size=mamba_block_size,
+            shapes=shapes,
+            dtypes=dtypes,  # type: ignore[arg-type]
+            mamba_type=mamba_type,
+            mamba_cache_mode=cache_config.mamba_cache_mode,
+            page_size_padded=cache_config.mamba_page_size_padded,
+        )

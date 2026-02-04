@@ -328,6 +328,24 @@ def kv_cache_dtype_str_to_dtype(
     return STR_DTYPE_TO_TORCH_DTYPE[kv_cache_dtype]
 
 
+def resolve_kv_cache_dtype(cache_dtype: str, model_dtype: torch.dtype) -> torch.dtype:
+    """Resolve the KV cache dtype from cache config string and model dtype.
+
+    This is a lightweight resolver that handles "auto" by using model_dtype,
+    and other values by looking up in STR_DTYPE_TO_TORCH_DTYPE.
+
+    Args:
+        cache_dtype: Cache dtype string from cache config (e.g., "auto", "fp8").
+        model_dtype: Model's dtype used when cache_dtype is "auto".
+
+    Returns:
+        Resolved torch dtype for KV cache.
+    """
+    if cache_dtype == "auto":
+        return model_dtype
+    return STR_DTYPE_TO_TORCH_DTYPE[cache_dtype]
+
+
 def set_random_seed(seed: int | None) -> None:
     if seed is not None:
         random.seed(seed)

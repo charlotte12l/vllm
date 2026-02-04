@@ -13,6 +13,7 @@ from vllm.v1.core.kv_cache_utils import (
     get_kv_cache_configs,
 )
 from vllm.v1.engine.core import EngineCore as V1EngineCore
+from vllm.v1.worker.gpu.attn_utils import get_kv_cache_specs_from_config
 
 from ..utils import create_new_process_for_each_test
 from .registry import (
@@ -81,7 +82,7 @@ def can_initialize(
 
     # Avoid calling model.forward()
     def _initialize_kv_caches_v1(self, vllm_config):
-        kv_cache_specs = self.model_executor.get_kv_cache_specs()
+        kv_cache_specs = get_kv_cache_specs_from_config(vllm_config)
         kv_cache_configs = get_kv_cache_configs(
             vllm_config,
             kv_cache_specs,

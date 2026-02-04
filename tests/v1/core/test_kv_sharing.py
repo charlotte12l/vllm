@@ -16,6 +16,15 @@ def new_kv_cache_spec():
     )
 
 
+def make_kv_cache_group_spec(layer_names, kv_cache_spec):
+    """Create a KVCacheGroupSpec for tests with num_layers."""
+    return KVCacheGroupSpec(
+        kv_cache_spec=kv_cache_spec,
+        num_layers=len(layer_names),
+        worker_layer_names=layer_names,
+    )
+
+
 def test_initialize_kv_cache_for_kv_sharing_different_attn_groups():
     """
     Test initializing KV cache sharing with different attention groups.
@@ -31,7 +40,10 @@ def test_initialize_kv_cache_for_kv_sharing_different_attn_groups():
     # However, if they have different attention backends, they will be
     # placed in different attention groups for KV cache group 0
     kv_cache_groups = [
-        KVCacheGroupSpec(["model.layers.0", "model.layers.1"], new_kv_cache_spec()),
+        make_kv_cache_group_spec(
+            ["model.layers.0", "model.layers.1"],
+            new_kv_cache_spec(),
+        ),
     ]
 
     add_kv_sharing_layers_to_kv_cache_groups(
@@ -41,7 +53,7 @@ def test_initialize_kv_cache_for_kv_sharing_different_attn_groups():
 
     # Check that the layers were added to the correct KV cache group
     assert len(kv_cache_groups) == 1
-    assert kv_cache_groups[0].layer_names == [
+    assert kv_cache_groups[0].worker_layer_names == [
         "model.layers.0",
         "model.layers.1",
         "model.layers.2",
@@ -60,7 +72,10 @@ def test_initialize_kv_cache_for_kv_sharing_same_attn_groups():
     }
 
     kv_cache_groups = [
-        KVCacheGroupSpec(["model.layers.0", "model.layers.1"], new_kv_cache_spec()),
+        make_kv_cache_group_spec(
+            ["model.layers.0", "model.layers.1"],
+            new_kv_cache_spec(),
+        ),
     ]
 
     add_kv_sharing_layers_to_kv_cache_groups(
@@ -70,7 +85,7 @@ def test_initialize_kv_cache_for_kv_sharing_same_attn_groups():
 
     # Check that the layers were added to the correct KV cache group
     assert len(kv_cache_groups) == 1
-    assert kv_cache_groups[0].layer_names == [
+    assert kv_cache_groups[0].worker_layer_names == [
         "model.layers.0",
         "model.layers.1",
         "model.layers.2",
@@ -90,8 +105,14 @@ def test_initialize_kv_cache_for_kv_sharing_no_attn_groups():
     }
 
     kv_cache_groups = [
-        KVCacheGroupSpec(["model.layers.0"], new_kv_cache_spec()),
-        KVCacheGroupSpec(["model.layers.1"], new_kv_cache_spec()),
+        make_kv_cache_group_spec(
+            ["model.layers.0"],
+            new_kv_cache_spec(),
+        ),
+        make_kv_cache_group_spec(
+            ["model.layers.1"],
+            new_kv_cache_spec(),
+        ),
     ]
 
     add_kv_sharing_layers_to_kv_cache_groups(
@@ -101,5 +122,5 @@ def test_initialize_kv_cache_for_kv_sharing_no_attn_groups():
 
     # Check that the layers were added to the correct KV cache group
     assert len(kv_cache_groups) == 2
-    assert kv_cache_groups[0].layer_names == ["model.layers.0", "model.layers.2"]
-    assert kv_cache_groups[1].layer_names == ["model.layers.1", "model.layers.3"]
+    assert kv_cache_groups[0].worker_layer_names == ["model.layers.0", "model.layers.2"]
+    assert kv_cache_groups[1].worker_layer_names == ["model.layers.1", "model.layers.3"]

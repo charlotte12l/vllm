@@ -10,8 +10,8 @@ import torch.nn as nn
 import vllm.envs as envs
 from vllm.attention.utils.kv_sharing_utils import validate_kv_sharing_target
 from vllm.attention.utils.kv_transfer_utils import maybe_transfer_kv_layer
-from vllm.config import CacheConfig, get_current_vllm_config
-from vllm.config.vllm import VllmConfig
+from vllm.config import CacheConfig, ParallelConfig, get_current_vllm_config
+from vllm.config.model_arch import KVCacheModelConfig
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
@@ -29,6 +29,7 @@ from vllm.platforms import current_platform
 from vllm.utils.torch_utils import (
     direct_register_custom_op,
     kv_cache_dtype_str_to_dtype,
+    resolve_kv_cache_dtype,
 )
 from vllm.v1.attention.backend import (
     AttentionBackend,
@@ -453,29 +454,40 @@ class Attention(nn.Module, AttentionLayerBase):
     def get_attn_backend(self) -> type[AttentionBackend]:
         return self.attn_backend
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        # Block size may get updated after model loading, refresh it
-        block_size = vllm_config.cache_config.block_size
-        # Should not be called for enc-dec or encoder-only attention.
-        assert self.attn_type == AttentionType.DECODER
-        if self.sliding_window is not None:
-            assert not vllm_config.model_config.use_mla, (
-                "MLA is not supported for slidingwindow"
-            )
+    @classmethod
+    def get_kv_cache_spec(
+        cls,
+        kv_cache_config: KVCacheModelConfig,
+        cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
+        model_dtype: torch.dtype,
+        layer_type: str,
+    ) -> KVCacheSpec:
+        kv_dtype = resolve_kv_cache_dtype(cache_config.cache_dtype, model_dtype)
+        tp_size = parallel_config.tensor_parallel_size
+        num_kv_heads = kv_cache_config.get_num_kv_heads_per_tp(tp_size)
+
+        # Apply block_pool_size if present (e.g., Whisper models)
+        block_pool_size = kv_cache_config.block_pool_size
+        if block_pool_size is not None and block_pool_size > 1:
+            num_kv_heads = num_kv_heads * block_pool_size
+
+        if layer_type == "sliding_attention":
             return SlidingWindowSpec(
-                block_size=block_size,
-                num_kv_heads=self.num_kv_heads,
-                head_size=self.head_size,
-                dtype=self.kv_cache_torch_dtype,
-                sliding_window=self.sliding_window,
+                block_size=cache_config.block_size,
+                num_kv_heads=num_kv_heads,
+                head_size=kv_cache_config.head_size,
+                sliding_window=kv_cache_config.sliding_window,
+                dtype=kv_dtype,
             )
         else:
+            # Default to full attention (handles "full_attention", "attention")
             return FullAttentionSpec(
-                block_size=block_size,
-                num_kv_heads=self.num_kv_heads,
-                head_size=self.head_size,
-                head_size_v=self.head_size_v,
-                dtype=self.kv_cache_torch_dtype,
+                block_size=cache_config.block_size,
+                num_kv_heads=num_kv_heads,
+                head_size=kv_cache_config.head_size,
+                head_size_v=kv_cache_config.head_size_v,
+                dtype=kv_dtype,
             )
 
 
@@ -696,16 +708,26 @@ class MLAAttention(nn.Module, AttentionLayerBase):
     def get_attn_backend(self) -> type[AttentionBackend]:
         return self.attn_backend
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        kv_cache_dtype = kv_cache_dtype_str_to_dtype(
-            self.kv_cache_dtype, vllm_config.model_config
-        )
+    @classmethod
+    def get_kv_cache_spec(
+        cls,
+        kv_cache_config: KVCacheModelConfig,
+        cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
+        model_dtype: torch.dtype,
+        layer_type: str,
+    ) -> KVCacheSpec:
+        kv_dtype = resolve_kv_cache_dtype(cache_config.cache_dtype, model_dtype)
+
+        # MLA head_size = kv_lora_rank + qk_rope_head_dim
+        mla_head_size = kv_cache_config.kv_lora_rank + kv_cache_config.qk_rope_head_dim
+
         return MLAAttentionSpec(
-            block_size=vllm_config.cache_config.block_size,
-            num_kv_heads=1,
-            head_size=self.head_size,
-            dtype=kv_cache_dtype,
-            cache_dtype_str=vllm_config.cache_config.cache_dtype,
+            block_size=cache_config.block_size,
+            num_kv_heads=1,  # MLA uses MQA-style
+            head_size=mla_head_size,
+            dtype=kv_dtype,
+            cache_dtype_str=cache_config.cache_dtype,
         )
 
 

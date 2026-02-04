@@ -7,9 +7,11 @@ import numpy as np
 import torch
 
 from vllm.attention.layer import Attention
-from vllm.config import CacheConfig, VllmConfig
+from vllm.config import CacheConfig, ParallelConfig
+from vllm.config.model_arch import KVCacheModelConfig
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
+from vllm.utils.torch_utils import resolve_kv_cache_dtype
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionMetadata,
@@ -171,10 +173,22 @@ class CrossAttention(Attention):
             **kwargs,
         )
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
+    @classmethod
+    def get_kv_cache_spec(
+        cls,
+        kv_cache_config: KVCacheModelConfig,
+        cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
+        model_dtype: torch.dtype,
+        layer_type: str,
+    ) -> KVCacheSpec:
+        kv_dtype = resolve_kv_cache_dtype(cache_config.cache_dtype, model_dtype)
+        tp_size = parallel_config.tensor_parallel_size
+        num_kv_heads = kv_cache_config.get_num_kv_heads_per_tp(tp_size)
+
         return CrossAttentionSpec(
-            block_size=vllm_config.cache_config.block_size,
-            num_kv_heads=self.num_kv_heads,
-            head_size=self.head_size,
-            dtype=self.kv_cache_torch_dtype,
+            block_size=cache_config.block_size,
+            num_kv_heads=num_kv_heads,
+            head_size=kv_cache_config.head_size,
+            dtype=kv_dtype,
         )

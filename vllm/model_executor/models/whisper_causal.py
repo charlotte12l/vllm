@@ -240,15 +240,6 @@ class WhisperCausalAttentionWithBlockPooling(Attention):
             **extra_impl_args,
         )
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig):
-        kv_cache_spec = super().get_kv_cache_spec(vllm_config)
-        assert isinstance(kv_cache_spec, AttentionSpec)
-        kv_cache_spec = replace(
-            kv_cache_spec,
-            num_kv_heads=self.block_pool_size * kv_cache_spec.num_kv_heads,
-        )
-        return kv_cache_spec
-
 
 class WhisperCausalAttention(nn.Module):
     def __init__(

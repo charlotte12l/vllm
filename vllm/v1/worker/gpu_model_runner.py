@@ -1786,7 +1786,11 @@ class GPUModelRunner(
 
             if self.speculative_config and spec_decode_common_attn_metadata is None:
                 if isinstance(self.drafter, EagleProposer):
-                    if self.drafter.attn_layer_names[0] in kv_cache_group.layer_names:
+                    group_layer_names = kv_cache_group.worker_layer_names
+                    assert group_layer_names is not None, (
+                        "worker_layer_names must be set by workers"
+                    )
+                    if self.drafter.attn_layer_names[0] in group_layer_names:
                         spec_decode_common_attn_metadata = cm
                 else:
                     spec_decode_common_attn_metadata = cm
@@ -4994,7 +4998,7 @@ class GPUModelRunner(
         ) -> tuple[dict[AttentionGroupKey, list[str]], set[type[AttentionBackend]]]:
             layer_type = cast(type[Any], AttentionLayerBase)
             layers = get_layers_from_vllm_config(
-                self.vllm_config, layer_type, kv_cache_group_spec.layer_names
+                self.vllm_config, layer_type, kv_cache_group_spec.worker_layer_names
             )
             attn_backends = {}
             attn_backend_layers = defaultdict(list)
@@ -5003,7 +5007,11 @@ class GPUModelRunner(
             # attention backend subclasses (e.g. ChunkedLocalAttention) unless
             # they are cached correctly, there will be different objects per
             # layer.
-            for layer_name in kv_cache_group_spec.layer_names:
+            group_layer_names = kv_cache_group_spec.worker_layer_names
+            assert group_layer_names is not None, (
+                "worker_layer_names must be set by workers"
+            )
+            for layer_name in group_layer_names:
                 attn_backend = layers[layer_name].get_attn_backend()
 
                 if layer_name in self.kv_sharing_fast_prefill_eligible_layers:
@@ -5418,7 +5426,11 @@ class GPUModelRunner(
 
         layer_names = set()
         for group in kv_cache_config.kv_cache_groups:
-            for layer_name in group.layer_names:
+            group_layer_names = group.worker_layer_names
+            assert group_layer_names is not None, (
+                "worker_layer_names must be set by workers"
+            )
+            for layer_name in group_layer_names:
                 if layer_name in self.runner_only_attn_layers:
                     continue
                 layer_names.add(layer_name)
@@ -5702,6 +5714,8 @@ class GPUModelRunner(
         """
         kv_cache_config = deepcopy(kv_cache_config)
         self.kv_cache_config = kv_cache_config
+        # Validate KV sharing config and populate shared_kv_cache_layers
+        self._validate_kv_sharing_config()
         self.may_add_encoder_only_layers_to_kv_cache_config()
         self.maybe_add_kv_sharing_layers_to_kv_cache_groups(kv_cache_config)
         self.initialize_attn_backend(kv_cache_config)
@@ -5783,41 +5797,44 @@ class GPUModelRunner(
                 "Only support one encoder-only attention spec now"
             )
             spec, layer_names = encoder_only_attn_specs.popitem()
+            # For encoder-only attention, add a group with num_layers
             self.kv_cache_config.kv_cache_groups.append(
-                KVCacheGroupSpec(layer_names=layer_names, kv_cache_spec=spec)
+                KVCacheGroupSpec(
+                    kv_cache_spec=spec,
+                    num_layers=len(layer_names),
+                    worker_layer_names=layer_names,
+                )
             )
 
-    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
-        """
-        Generates the KVCacheSpec by parsing the kv cache format from each
-        Attention module in the static forward context.
-        Returns:
-            KVCacheSpec: A dictionary mapping layer names to their KV cache
-            format. Layers that do not need KV cache are not included.
-        """
+    def _validate_kv_sharing_config(self) -> None:
+        """Validate KV sharing is properly configured via kv_sharing_config."""
         if has_ec_transfer() and get_ec_transfer().is_producer:
-            return {}
-        kv_cache_spec: dict[str, KVCacheSpec] = {}
-        layer_type = cast(type[Any], AttentionLayerBase)
-        attn_layers = get_layers_from_vllm_config(self.vllm_config, layer_type)
-        for layer_name, attn_module in attn_layers.items():
-            if isinstance(attn_module, Attention) and (
-                kv_tgt_layer := attn_module.kv_sharing_target_layer_name
-            ):
-                # The layer doesn't need its own KV cache and will use that of
-                # the target layer. We skip creating a KVCacheSpec for it, so
-                # that KV cache management logic will act as this layer does
-                # not exist, and doesn't allocate KV cache for the layer. This
-                # enables the memory saving of cross-layer kv sharing, allowing
-                # a given amount of memory to accommodate longer context lengths
-                # or enable more requests to be processed simultaneously.
-                self.shared_kv_cache_layers[layer_name] = kv_tgt_layer
-                continue
-            # Skip modules that don't need KV cache (eg encoder-only attention)
-            if spec := attn_module.get_kv_cache_spec(self.vllm_config):
-                kv_cache_spec[layer_name] = spec
+            return
 
-        return kv_cache_spec
+        kv_cache_config = (
+            self.vllm_config.model_config.model_arch_config.kv_cache_config
+        )
+        kv_sharing_config = (
+            kv_cache_config.kv_sharing_config if kv_cache_config else None
+        )
+
+        if kv_sharing_config is not None:
+            model_prefix = kv_cache_config.model_prefix if kv_cache_config else "model"
+            for layer_idx, target_idx in kv_sharing_config.sharing_map.items():
+                layer_name = f"{model_prefix}.layers.{layer_idx}.self_attn.attn"
+                target_name = f"{model_prefix}.layers.{target_idx}.self_attn.attn"
+                self.shared_kv_cache_layers[layer_name] = target_name
+            return
+
+        # Fail if model uses module-based KV sharing without config
+        attn_layers = get_layers_from_vllm_config(self.vllm_config, Attention)
+        for layer_name, attn_module in attn_layers.items():
+            if attn_module.kv_sharing_target_layer_name:
+                raise ValueError(
+                    f"Attention '{layer_name}' uses kv_sharing_target_layer_name "
+                    "but no kv_sharing_config provided. Add kv_sharing_config to "
+                    "the model's ModelArchConfigConvertor."
+                )
 
     def _to_list(self, sampled_token_ids: torch.Tensor) -> list[list[int]]:
         # This is a short term mitigation for issue mentioned in

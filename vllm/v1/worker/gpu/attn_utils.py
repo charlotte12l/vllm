@@ -1,12 +1,28 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 import torch
 
-from vllm.config import VllmConfig, get_layers_from_vllm_config
+from vllm.attention.layer import Attention, MLAAttention
+from vllm.config import (
+    CacheConfig,
+    ParallelConfig,
+    VllmConfig,
+    get_layers_from_vllm_config,
+)
+from vllm.config.model_arch import KVCacheModelConfig
+from vllm.logger import init_logger
+from vllm.model_executor.layers.attention.chunked_local_attention import (
+    ChunkedLocalAttention,
+)
+from vllm.model_executor.layers.attention.cross_attention import CrossAttention
+from vllm.model_executor.layers.attention.static_sink_attention import (
+    StaticSinkAttention,
+)
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
+from vllm.model_executor.layers.mamba.abstract import MambaBase
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionMetadataBuilder,
@@ -15,20 +31,12 @@ from vllm.v1.attention.backend import (
 from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     KVCacheConfig,
+    KVCacheGroupSpec,
     KVCacheSpec,
 )
 from vllm.v1.worker.utils import bind_kv_cache
 
-
-def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
-    kv_cache_spec: dict[str, KVCacheSpec] = {}
-    layer_type = cast(type[Any], AttentionLayerBase)
-    attn_layers = get_layers_from_vllm_config(vllm_config, layer_type)
-    for layer_name, attn_module in attn_layers.items():
-        # Skip modules that don't need KV cache (eg encoder-only attention)
-        if spec := attn_module.get_kv_cache_spec(vllm_config):
-            kv_cache_spec[layer_name] = spec
-    return kv_cache_spec
+logger = init_logger(__name__)
 
 
 def init_attn_backend(
@@ -40,7 +48,8 @@ def init_attn_backend(
     attn_metadata_builders: list[AttentionMetadataBuilder] = []
     flashinfer_workspace: torch.Tensor | None = None
     for kv_cache_group_spec in kv_cache_config.kv_cache_groups:
-        layer_names = kv_cache_group_spec.layer_names
+        layer_names = kv_cache_group_spec.worker_layer_names
+        assert layer_names is not None, "worker_layer_names must be set by workers"
         any_layer_name = next(iter(layer_names))
 
         layer_type = cast(type[Any], AttentionLayerBase)
@@ -77,7 +86,11 @@ def _allocate_kv_cache(
 
     layer_names = set()
     for group in kv_cache_config.kv_cache_groups:
-        for layer_name in group.layer_names:
+        group_layer_names = group.worker_layer_names
+        assert group_layer_names is not None, (
+            "worker_layer_names must be set by workers"
+        )
+        for layer_name in group_layer_names:
             layer_names.add(layer_name)
     assert layer_names == set(kv_cache_raw_tensors.keys()), (
         "Some layers are not correctly initialized"
@@ -94,7 +107,9 @@ def _reshape_kv_cache(
     for kv_cache_group_spec in kv_cache_config.kv_cache_groups:
         kv_cache_spec = kv_cache_group_spec.kv_cache_spec
         assert isinstance(kv_cache_spec, AttentionSpec)
-        for layer_name in kv_cache_group_spec.layer_names:
+        layer_names = kv_cache_group_spec.worker_layer_names
+        assert layer_names is not None, "worker_layer_names must be set by workers"
+        for layer_name in layer_names:
             raw_tensor = kv_cache_raw_tensors[layer_name]
             assert raw_tensor.numel() % kv_cache_spec.page_size_bytes == 0
             num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
@@ -179,6 +194,122 @@ def build_attn_metadata(
             common_prefix_len=0,
             common_attn_metadata=common_attn_metadata,
         )
-        for layer_name in kv_cache_spec.layer_names:
+        layer_names = kv_cache_spec.worker_layer_names
+        assert layer_names is not None, "worker_layer_names must be set by workers"
+        for layer_name in layer_names:
             attn_metadata[layer_name] = metadata
     return attn_metadata
+
+
+# Type alias for spec creator classmethod
+SpecCreator = Callable[
+    [KVCacheModelConfig, CacheConfig, ParallelConfig, torch.dtype, str],
+    KVCacheSpec,
+]
+
+# Static map of layer_type -> classmethod for creating specs
+_SPEC_CREATORS: dict[str, SpecCreator] = {
+    "full_attention": Attention.get_kv_cache_spec,
+    "attention": Attention.get_kv_cache_spec,
+    "sliding_attention": Attention.get_kv_cache_spec,
+    "chunked_attention": ChunkedLocalAttention.get_kv_cache_spec,
+    "mla_attention": MLAAttention.get_kv_cache_spec,
+    "mamba": MambaBase.get_kv_cache_spec,
+    "cross_attention": CrossAttention.get_kv_cache_spec,
+    "sink_attention": StaticSinkAttention.get_kv_cache_spec,
+}
+
+
+def get_kv_cache_specs_from_config(vllm_config: VllmConfig) -> list[KVCacheSpec]:
+    """Get KV cache specs from config without RPC or model loading."""
+    kv_cache_config = vllm_config.model_config.model_arch_config.kv_cache_config
+    if kv_cache_config is None:
+        return []
+
+    if kv_cache_config.total_num_kv_heads == 0:
+        has_mamba = kv_cache_config.layer_types is not None and any(
+            "mamba" in types for types in kv_cache_config.layer_types
+        )
+        if not has_mamba:
+            return []
+
+    is_mla = vllm_config.model_config.model_arch_config.is_deepseek_mla
+    num_physical_layers = kv_cache_config.num_hidden_layers
+
+    kv_sharing_config = kv_cache_config.kv_sharing_config
+    sharing_layers = (
+        set(kv_sharing_config.sharing_map.keys())
+        if kv_sharing_config is not None
+        else set()
+    )
+
+    cache_config = vllm_config.cache_config
+    parallel_config = vllm_config.parallel_config
+    model_dtype = vllm_config.model_config.dtype
+
+    specs: list[KVCacheSpec] = []
+    global_idx = 0
+
+    for physical_idx in range(num_physical_layers):
+        layer_types = kv_cache_config.get_layer_types(physical_idx)
+
+        for layer_type in layer_types:
+            if global_idx in sharing_layers:
+                global_idx += 1
+                continue
+
+            if is_mla and layer_type in ("full_attention", "attention"):
+                layer_type = "mla_attention"
+
+            if layer_type == "linear_attention":
+                global_idx += 1
+                continue
+
+            creator = _SPEC_CREATORS.get(layer_type)
+            if creator is None:
+                logger.warning(
+                    "Unknown layer type '%s' at physical layer %d, skipping",
+                    layer_type,
+                    physical_idx,
+                )
+                global_idx += 1
+                continue
+
+            spec = creator(
+                kv_cache_config,
+                cache_config,
+                parallel_config,
+                model_dtype,
+                layer_type,
+            )
+            specs.append(spec)
+            global_idx += 1
+
+    return specs
+
+
+def get_kv_cache_groups_from_config(
+    vllm_config: VllmConfig,
+) -> list[KVCacheGroupSpec]:
+    """Get KV cache groups from config without RPC or model loading.
+
+    This is the preferred function for scheduler initialization.
+    Returns grouped specs with num_layers count - exactly what scheduler needs.
+
+    Args:
+        vllm_config: The global VllmConfig
+
+    Returns:
+        List of KVCacheGroupSpec with kv_cache_spec and num_layers set.
+        worker_layer_names is None (workers resolve names during init).
+    """
+    # Import here to avoid circular dependency
+    from vllm.v1.core.kv_cache_utils import get_kv_cache_groups
+
+    # First get flat list of specs
+    kv_cache_specs = get_kv_cache_specs_from_config(vllm_config)
+    if not kv_cache_specs:
+        return []
+
+    # Then group them by type
+    return get_kv_cache_groups(vllm_config, kv_cache_specs)

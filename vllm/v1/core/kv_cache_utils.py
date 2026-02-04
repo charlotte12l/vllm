@@ -735,55 +735,54 @@ def check_enough_kv_cache_memory(
 
 
 def create_kv_cache_group_specs(
-    kv_cache_spec: dict[str, KVCacheSpec], grouped_layer_names: list[list[str]]
+    kv_cache_specs: list[KVCacheSpec], grouped_indices: list[list[int]]
 ) -> list[KVCacheGroupSpec]:
     """
-    Create KVCacheGroupSpec object for each kv cache group layer.
-    The layers in the same group should share the same
-    KVCacheSpec.
+    Create KVCacheGroupSpec object for each kv cache group.
+    The layers in the same group should share the same KVCacheSpec.
 
     Args:
-        kv_cache_spec:
-            A mapping from each layer name to its corresponding KVCacheSpec.
-        grouped_layer_names:
+        kv_cache_specs:
+            List of KVCacheSpec indexed by global layer index.
+        grouped_indices:
             A list of kv cache groups, where each element is a list of layer
-            names that belong to the same group and should share the same
+            indices that belong to the same group and should share the same
             KVCacheSpec.
     Returns:
         A list of KVCacheGroupSpec objects, one for each group.
     """
     kv_cache_groups = []
-    for layer_names_one_group in grouped_layer_names:
-        layer_specs = [
-            kv_cache_spec[layer_name] for layer_name in layer_names_one_group
-        ]
+    for indices_one_group in grouped_indices:
+        layer_specs = [kv_cache_specs[idx] for idx in indices_one_group]
         merged_layer_spec = layer_specs[0].merge(layer_specs)
         kv_cache_groups.append(
-            KVCacheGroupSpec(layer_names_one_group, merged_layer_spec)
+            KVCacheGroupSpec(
+                kv_cache_spec=merged_layer_spec,
+                num_layers=len(indices_one_group),
+                worker_layer_names=None,
+            )
         )
     return kv_cache_groups
 
 
-def is_kv_cache_spec_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
+def is_kv_cache_spec_uniform(kv_cache_specs: list[KVCacheSpec]) -> bool:
     """
-    Whether all layers in the given KVCacheSpec have the same KV cache spec.
+    Whether all layers in the given KVCacheSpec list have the same KV cache spec.
     Note that we regard FullAttentionSpec with and without sliding window as
     the same type.
 
     Args:
-        kv_cache_spec: The kv cache spec of each attention layer in the model
+        kv_cache_specs: List of KVCacheSpec indexed by layer position
 
     Returns:
         True if all layers have the same type, False otherwise.
     """
-
-    if not kv_cache_spec:
+    if not kv_cache_specs:
         # Encoder-only models do not have KV cache, kv_cache_type can be
         # regarded as uniform.
         return True
     try:
-        kv_cache_spec_values = list(kv_cache_spec.values())
-        _ = kv_cache_spec_values[0].merge(kv_cache_spec_values)
+        _ = kv_cache_specs[0].merge(kv_cache_specs)
     except AssertionError:
         return False
     return True
@@ -796,7 +795,7 @@ def get_max_concurrency_for_kv_cache_config(
     Get the maximum concurrency for the given KV cache configuration.
     """
     num_layer_per_group = max(
-        len(group.layer_names) for group in kv_cache_config.kv_cache_groups
+        group.num_layers for group in kv_cache_config.kv_cache_groups
     )
     max_memory_usage_per_request = num_layer_per_group * max_memory_usage_bytes(
         vllm_config, (group.kv_cache_spec for group in kv_cache_config.kv_cache_groups)
@@ -854,23 +853,25 @@ def get_uniform_page_size(kv_cache_specs: Iterable[KVCacheSpec]) -> int:
 
 
 def _get_kv_cache_groups_uniform_spec(
-    kv_cache_specs: dict[str, KVCacheSpec],
+    kv_cache_specs: list[KVCacheSpec],
 ) -> list[KVCacheGroupSpec]:
     """
     Generates the KV cache configuration for a model with the same KV cache
     spec for all layers.
 
     Args:
-        kv_cache_specs: The kv cache spec of each attention layer in the model
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index
 
     Returns:
         The generated KVCacheGroupSpecs
     """
-
-    return create_kv_cache_group_specs(kv_cache_specs, [list(kv_cache_specs.keys())])
+    return create_kv_cache_group_specs(
+        kv_cache_specs, [list(range(len(kv_cache_specs)))]
+    )
 
 
 def _get_kv_cache_groups_uniform_type(
+    kv_cache_specs: list[KVCacheSpec],
     spec: UniformTypeKVCacheSpecs,
 ) -> list[KVCacheGroupSpec]:
     """
@@ -878,76 +879,82 @@ def _get_kv_cache_groups_uniform_type(
     but different hidden sizes. All layers are merged into one group.
 
     Args:
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index
         spec: The UniformTypeKVCacheSpecs of the model
 
     Returns:
         The generated KVCacheGroupSpecs
     """
+    return [
+        KVCacheGroupSpec(
+            kv_cache_spec=spec,
+            num_layers=len(kv_cache_specs),
+            worker_layer_names=None,
+        )
+    ]
 
-    return [KVCacheGroupSpec(list(spec.kv_cache_specs.keys()), spec)]
 
-
-def is_kv_cache_page_size_uniform(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
+def is_kv_cache_page_size_uniform(kv_cache_specs: list[KVCacheSpec]) -> bool:
     """
-    Whether all layers in the given KVCacheSpec have the same page size.
+    Whether all layers in the given KVCacheSpec list have the same page size.
+
     Args:
-        kv_cache_spec: The KVCacheSpec of each attention layer in the model
+        kv_cache_specs: List of KVCacheSpec indexed by layer position
 
     Returns:
         True if all layers have the same page size, False otherwise.
     """
-
-    page_sizes = {layer.page_size_bytes for layer in kv_cache_spec.values()}
+    page_sizes = {spec.page_size_bytes for spec in kv_cache_specs}
     return len(page_sizes) == 1
 
 
 def unify_kv_cache_spec_page_size(
-    kv_cache_spec: dict[str, KVCacheSpec],
-) -> dict[str, KVCacheSpec]:
+    kv_cache_specs: list[KVCacheSpec],
+) -> list[KVCacheSpec]:
     """
-    Unify the page size of the given KVCacheSpec. If the page size of all layers
-    are the same, return the original KVCacheSpec. If not same, unify the page
+    Unify the page size of the given KVCacheSpec list. If the page size of all
+    layers are the same, return the original list. If not same, unify the page
     size by increasing the block size of layers with smaller page size. Raise
     NotImplementedError if failed to unify the page size.
 
     Args:
-        kv_cache_spec: The KVCacheSpec of each attention layer in the model
+        kv_cache_specs: List of KVCacheSpec indexed by layer position
 
     Returns:
-        The updated KVCacheSpec with the same page_size_bytes.
+        The updated list of KVCacheSpec with the same page_size_bytes.
     """
-    page_sizes = {layer.page_size_bytes for layer in kv_cache_spec.values()}
+    page_sizes = {spec.page_size_bytes for spec in kv_cache_specs}
     if len(page_sizes) <= 1:
         # All layers have the same page size, no need to unify.
-        return kv_cache_spec
+        return kv_cache_specs
 
     max_page_size = max(page_sizes)
-    new_kv_cache_spec = {}
-    for layer_name, layer_spec in kv_cache_spec.items():
-        if layer_spec.page_size_bytes == max_page_size:
-            new_kv_cache_spec[layer_name] = layer_spec
+    new_specs: list[KVCacheSpec] = []
+    for spec in kv_cache_specs:
+        if spec.page_size_bytes == max_page_size:
+            new_specs.append(spec)
         else:
-            layer_page_size = layer_spec.page_size_bytes
+            layer_page_size = spec.page_size_bytes
             if max_page_size % layer_page_size != 0:
                 raise NotImplementedError(
                     "The page size of the layer is not divisible by the "
                     "maximum page size. Cannot unify by adjusting block_size."
                 )
             ratio = max_page_size // layer_page_size
-            new_block_size = layer_spec.block_size * ratio
-            new_spec = replace(layer_spec, block_size=new_block_size)
+            new_block_size = spec.block_size * ratio
+            new_spec = replace(spec, block_size=new_block_size)
             assert new_spec.page_size_bytes == max_page_size
-            new_kv_cache_spec[layer_name] = new_spec
-    return new_kv_cache_spec
+            new_specs.append(new_spec)
+    return new_specs
 
 
-def is_kv_cache_type_attention_free(kv_cache_spec: dict[str, KVCacheSpec]) -> bool:
-    # kv_cache_spec is an empty dict for attention free models
-    return not kv_cache_spec
+def is_kv_cache_type_attention_free(kv_cache_specs: list[KVCacheSpec]) -> bool:
+    # kv_cache_specs is an empty list for attention free models
+    return not kv_cache_specs
 
 
 def _get_kv_cache_groups_uniform_page_size(
-    kv_cache_spec: dict[str, KVCacheSpec],
+    kv_cache_specs: list[KVCacheSpec],
 ) -> list[KVCacheGroupSpec]:
     """
     Generates the KV cache groups for hybrid models with multiple
@@ -966,104 +973,43 @@ def _get_kv_cache_groups_uniform_page_size(
     The KVCacheManager allocates the block_table for each group based on its
     kv_cache spec, and the model runner applies the block table to each layer
     in the group.
-    For example:
-    1. A model only uses full attention. The pattern is
-    (num_hidden_layers * full), so there is only one group and the block table
-    is shared by all layers. It is already handled by
-    `_get_kv_cache_config_uniform_type`.
-    2. A model with 10 full attention layers and 20 sliding window
-    attention layers. There are 3 layers in the pattern (1 * full, 2 * sw), so
-    there are 3 kv_cache_groups, each of which represents 10 layers.
-
-    To simplify the implementation, we make the following assumptions:
-    1. Physical memory per block: Must be the same across all KV cache groups.
-    Breaking this assumption is non-trivial due to memory fragmentation concerns
-    when allocating blocks of different sizes.
-    2. Tokens per block (block_size): Currently, we directly use
-    `CacheConfig.block_size` for all layers. It can be extended to vary by KV
-    cache group, but within each KV cache group, all layers must share the same
-    block size.
-    3. Physical memory per token per layer: This property is decided by model
-    config. Currently we only support models that have the same physical memory
-    per token per layer for all layers. Can be relaxed with a simple extension,
-    but still need to keep physical memory per block the same for all groups.
-    4. Number of layers per group: Currently assumed the same for all layers.
-    Can be relaxed with a simple extension, but still need to keep physical
-    memory per block the same for all groups.
-    5. Attention type within groups: All layers in a group must share the same
-    attention type. One exception is that, when
-    `--disable-hybrid-kv-cache-manager` is true, the single group for full
-    attention layers may also include attention layers using sliding window or
-    LLaMA 4 local attention. See `unify_hybrid_kv_cache_specs` for more details.
-    6. Support for multiple attention types: The design for most components is
-    general to an arbitrary number of attention types. But
-    `find_longest_cache_hit` only supports one attention type or two
-    types of full-attention plus exactly one another type. The general
-    implementation of this function is feasible but we don't know how to
-    implement it cleanly yet.
-
-    As we assume tokens per block, physical memory per token per layer, and
-    number of layers per group are the same now, we can ensure that physical
-    memory per block is the same for all groups.
 
     Args:
-        kv_cache_spec: The KVCacheSpec of each attention layer in the model
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index
     Returns:
         The generated KVCacheGroupSpecs
     """
-    # Group all layers by kv_cache_spec.
-    # E.g., 2 full attention layers and 3 sliding window attention layers,
-    # -> (full.0, full.1), (sw.0, sw.1, sw.2).
-    same_type_layers: dict[KVCacheSpec, list[str]] = defaultdict(list)
-    for layer_name, layer_spec in kv_cache_spec.items():
-        same_type_layers[layer_spec].append(layer_name)
+    # Group all layer indices by kv_cache_spec.
+    same_type_indices: dict[KVCacheSpec, list[int]] = defaultdict(list)
+    for idx, spec in enumerate(kv_cache_specs):
+        same_type_indices[spec].append(idx)
 
     # Split each group into smaller groups, to make the number of layers in each
     # group identical. Add padding to the last group of each type if necessary.
-    # E.g., (full.0, full.1), (sw.0, sw.1, sw.2)
-    # split to 3 groups with 2 layers each:
-    # (full.0, full.1), (sw.0, sw.2), (sw.1, padding).
-    # FIXME(Chen): At the moment of writing this code (2025-06-02), all
-    # open-source hybrid model follows a n:1 pattern between different attention
-    # types (e.g., Gemma3 5:1 between sw and full, LLaMA4 3:1 between local and
-    # full), so we can use the "1" in the n:1 pattern as the group size, which
-    # is the minimum number of layers among all attention types. Need a better
-    # strategy if we want to support more complex patterns (e.g., 20 full + 30
-    # sw, where the group size should be 10).
-    min_num_layers = min([len(layers) for layers in same_type_layers.values()])
+    min_num_layers = min(len(indices) for indices in same_type_indices.values())
     group_size = min_num_layers
-    max_num_layers = max([len(layers) for layers in same_type_layers.values()])
+    max_num_layers = max(len(indices) for indices in same_type_indices.values())
     if max_num_layers < min_num_layers * 1.25:
-        # If the number of layers is not much larger than the minimum number of layers,
-        # use the maximum number of layers as the group size to avoid too many padding
-        # layers. A typical example is gpt-oss-20b + eagle, with 12 sw + 13 full. We
-        # pad it to (13 sw, 13 full) instead of (12 sw, 24 full). 1.25 is just a
-        # magic number to avoid too many padding layers.
+        # If the number of layers is not much larger than the minimum,
+        # use the maximum to avoid too many padding layers.
         group_size = max_num_layers
-    grouped_layers = []
-    for layers in same_type_layers.values():
-        num_padding_layers = group_size - len(layers) % group_size
+
+    grouped_indices: list[list[int]] = []
+    for indices in same_type_indices.values():
+        num_padding_layers = group_size - len(indices) % group_size
         if num_padding_layers != group_size:
             logger.warning(
-                "Add %d padding layers, may waste at most %.2f%% KV cache memory",  # noqa
+                "Add %d padding layers, may waste at most %.2f%% KV cache memory",
                 num_padding_layers,
-                num_padding_layers / len(layers) * 100,
+                num_padding_layers / len(indices) * 100,
             )
-        num_groups = cdiv(len(layers), group_size)
-        # In PP case, say if we have
-        # - stage 0: full.0, sw.0, sw.1
-        # - stage 1: full.1, sw.2, sw.3
-        # We should have 3 groups: (full.0, full.1), (sw.0, sw.2), (sw.1, sw.3)
-        # It can't be (full.0, full.1), (sw.0, sw.1), (sw.2, sw.3) because
-        # the 3 groups in stage 0 will be (full.0), (sw.0, sw.1), (empty group)
-        # and it will be padded to (full.0, padding), (sw.0, sw.1),
-        # (padding, padding) to ensure the number of layers in each group is
-        # the same and will cause memory waste.
-        # To avoid this, we assign layers[i::num_groups] to the i-th group
-        # instead of layers[i * group_size: (i + 1) * group_size]
+        num_groups = cdiv(len(indices), group_size)
+        # In PP case, assign indices[i::num_groups] to the i-th group
+        # to avoid memory waste from uneven distribution.
         for i in range(num_groups):
-            grouped_layers.append(layers[i::num_groups])
-    return create_kv_cache_group_specs(kv_cache_spec, grouped_layers)
+            grouped_indices.append(indices[i::num_groups])
+
+    return create_kv_cache_group_specs(kv_cache_specs, grouped_indices)
 
 
 def get_kv_cache_config_from_groups(
@@ -1072,71 +1018,65 @@ def get_kv_cache_config_from_groups(
     available_memory: int,
 ) -> KVCacheConfig:
     """
-    Generate the KV cache configuration from the KV cache groups and spec
-    of each layer.
+    Generate KVCacheConfig from groups with num_layers.
+
+    This function creates a config that workers will use to allocate KV cache.
+    Workers resolve layer names during initialization.
 
     Args:
         vllm_config: The global VllmConfig
-        kv_cache_groups: The KV cache groups
+        kv_cache_groups: Groups with num_layers set
         available_memory: Memory available for KV cache in bytes
+
     Returns:
-        The generated KVCacheConfig
+        KVCacheConfig with groups
     """
-    if len(kv_cache_groups) == 0:
-        # Attention free models do not have KV cache.
-        # Return num_blocks=1 as BlockPool always needs a null_block.
+    if not kv_cache_groups:
         return KVCacheConfig(
-            num_blocks=1,
+            num_blocks=0,
+            kv_cache_tensors=[],
+            kv_cache_groups=[],
+        )
+
+    # Calculate page size and number of blocks
+    total_page_size = sum(
+        group.kv_cache_spec.page_size_bytes * group.num_layers
+        for group in kv_cache_groups
+    )
+    num_layers = sum(group.num_layers for group in kv_cache_groups)
+
+    if total_page_size == 0 or num_layers == 0:
+        return KVCacheConfig(
+            num_blocks=0,
             kv_cache_tensors=[],
             kv_cache_groups=kv_cache_groups,
         )
 
-    # Determine how model runners should initialize the KV cache tensors.
-    if len(kv_cache_groups) == 1 and isinstance(
-        kv_cache_groups[0].kv_cache_spec, UniformTypeKVCacheSpecs
-    ):
-        # Special case: all layers have the same type of KV cache but with
-        # different hidden size. Allocate different amount of memory for each
-        # layer based on its hidden size.
-        num_blocks = (
-            available_memory // kv_cache_groups[0].kv_cache_spec.page_size_bytes
-        )
-        num_blocks = may_override_num_blocks(vllm_config, num_blocks)
-        per_layer_specs = kv_cache_groups[0].kv_cache_spec.kv_cache_specs
-        kv_cache_tensors = [
-            KVCacheTensor(
-                size=per_layer_specs[layer_name].page_size_bytes * num_blocks,
-                shared_by=[layer_name],
-            )
-            for layer_name in kv_cache_groups[0].layer_names
-        ]
-    else:
-        # General case:
-        # We will have group_size memory pools, each is shared by one layer from
-        # each group. As layers of different groups have different block table,
-        # they will use different parts of the shared Tensor.
-        # The memory layout for 3 groups (full.0, full.1), (sw.0, sw.2),
-        # (sw.1, padding) will be: (group_size = 2)
-        # full.0, sw.0, sw.1: share a Tensor with size=available_memory//2
-        # full.1, sw.2: share another Tensor with size=available_memory//2
-        group_size = max(len(group.layer_names) for group in kv_cache_groups)
+    page_size_per_layer = total_page_size // num_layers
+    num_blocks = get_num_blocks(
+        vllm_config, num_layers, available_memory, page_size_per_layer
+    )
 
-        page_size = get_uniform_page_size(
-            [group.kv_cache_spec for group in kv_cache_groups]
+    # Create tensor specs for each group
+    # Use placeholder names that workers will resolve
+    kv_cache_tensors: list[KVCacheTensor] = []
+    global_layer_idx = 0
+    for group in kv_cache_groups:
+        if group.num_layers == 0:
+            continue
+
+        # Use placeholder names for tensor allocation
+        # Workers will resolve to real names based on their local layers
+        tensor_size = (
+            group.kv_cache_spec.page_size_bytes * group.num_layers * num_blocks
         )
-        assert group_size > 0, "group_size must be greater than 0"
-        num_blocks = get_num_blocks(
-            vllm_config, group_size, available_memory, page_size
+        placeholder_names = [
+            f"__layer_idx_{global_layer_idx + i}__" for i in range(group.num_layers)
+        ]
+        kv_cache_tensors.append(
+            KVCacheTensor(size=tensor_size, shared_by=placeholder_names)
         )
-        kv_cache_tensors = []
-        for i in range(group_size):
-            shared_by = []
-            for j in range(len(kv_cache_groups)):
-                if i < len(kv_cache_groups[j].layer_names):
-                    shared_by.append(kv_cache_groups[j].layer_names[i])
-            kv_cache_tensors.append(
-                KVCacheTensor(size=page_size * num_blocks, shared_by=shared_by)
-            )
+        global_layer_idx += group.num_layers
 
     return KVCacheConfig(
         num_blocks=num_blocks,
@@ -1145,20 +1085,24 @@ def get_kv_cache_config_from_groups(
     )
 
 
-def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
+def unify_hybrid_kv_cache_specs(
+    kv_cache_specs: list[KVCacheSpec],
+) -> list[KVCacheSpec]:
     """
     This function tries to convert the KV cache specs to one type if the model
     is a hybrid model with multiple type of KV cache. It will convert all
     SlidingWindowSpec to FullAttentionSpec if both types are present.
 
     Args:
-        kv_cache_spec: The kv cache spec of each attention layer in the model
-    """
+        kv_cache_specs: List of KVCacheSpec indexed by layer position
 
+    Returns:
+        The updated list of KVCacheSpec with unified types.
+    """
     if is_kv_cache_spec_uniform(
-        kv_cache_spec
-    ) or UniformTypeKVCacheSpecs.is_uniform_type(kv_cache_spec):
-        return
+        kv_cache_specs
+    ) or UniformTypeKVCacheSpecs.is_uniform_type(kv_cache_specs):
+        return kv_cache_specs
 
     logger.warning(
         "Hybrid KV cache manager is disabled for this hybrid model, "
@@ -1168,86 +1112,102 @@ def unify_hybrid_kv_cache_specs(kv_cache_spec: dict[str, KVCacheSpec]):
     )
 
     has_full_attention = any(
-        isinstance(spec, FullAttentionSpec) for spec in kv_cache_spec.values()
+        isinstance(spec, FullAttentionSpec) for spec in kv_cache_specs
     )
     has_sliding_window = any(
-        isinstance(spec, SlidingWindowSpec) for spec in kv_cache_spec.values()
+        isinstance(spec, SlidingWindowSpec) for spec in kv_cache_specs
     )
     has_chunked_local_attention = any(
-        isinstance(spec, ChunkedLocalAttentionSpec) for spec in kv_cache_spec.values()
+        isinstance(spec, ChunkedLocalAttentionSpec) for spec in kv_cache_specs
     )
+
     if has_full_attention and (has_sliding_window or has_chunked_local_attention):
-        for layer_name, spec in kv_cache_spec.items():
+        new_specs: list[KVCacheSpec] = []
+        for spec in kv_cache_specs:
             if isinstance(spec, SlidingWindowSpec):
-                kv_cache_spec[layer_name] = FullAttentionSpec(
-                    block_size=spec.block_size,
-                    num_kv_heads=spec.num_kv_heads,
-                    head_size=spec.head_size,
-                    dtype=spec.dtype,
-                    sliding_window=spec.sliding_window,
-                    page_size_padded=spec.page_size_padded,
+                new_specs.append(
+                    FullAttentionSpec(
+                        block_size=spec.block_size,
+                        num_kv_heads=spec.num_kv_heads,
+                        head_size=spec.head_size,
+                        dtype=spec.dtype,
+                        sliding_window=spec.sliding_window,
+                        page_size_padded=spec.page_size_padded,
+                    )
                 )
             elif isinstance(spec, ChunkedLocalAttentionSpec):
-                kv_cache_spec[layer_name] = FullAttentionSpec(
-                    block_size=spec.block_size,
-                    num_kv_heads=spec.num_kv_heads,
-                    head_size=spec.head_size,
-                    dtype=spec.dtype,
-                    attention_chunk_size=spec.attention_chunk_size,
-                    page_size_padded=spec.page_size_padded,
+                new_specs.append(
+                    FullAttentionSpec(
+                        block_size=spec.block_size,
+                        num_kv_heads=spec.num_kv_heads,
+                        head_size=spec.head_size,
+                        dtype=spec.dtype,
+                        attention_chunk_size=spec.attention_chunk_size,
+                        page_size_padded=spec.page_size_padded,
+                    )
                 )
+            else:
+                new_specs.append(spec)
+        kv_cache_specs = new_specs
 
     if not (
-        is_kv_cache_spec_uniform(kv_cache_spec)
-        or UniformTypeKVCacheSpecs.is_uniform_type(kv_cache_spec)
+        is_kv_cache_spec_uniform(kv_cache_specs)
+        or UniformTypeKVCacheSpecs.is_uniform_type(kv_cache_specs)
     ):
         raise ValueError(
             "Hybrid KV cache manager is disabled but failed to "
             "convert the KV cache specs to one unified type."
         )
 
+    return kv_cache_specs
+
 
 def get_kv_cache_groups(
-    vllm_config: VllmConfig, kv_cache_spec: dict[str, KVCacheSpec]
+    vllm_config: VllmConfig, kv_cache_specs: list[KVCacheSpec]
 ) -> list[KVCacheGroupSpec]:
     """
     Split the layers in the model into groups with the same KV cache spec.
 
+    This function groups specs by type and returns groups with num_layers set.
+    Workers will resolve layer names during initialization.
+
     Args:
         vllm_config: The global VllmConfig
-        kv_cache_spec: The kv cache spec of each attention layer in the model
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index
 
     Returns:
-        The generated KVCacheGroups
+        List of KVCacheGroupSpec with num_layers set and
+        worker_layer_names=None (workers resolve names during initialization)
     """
-    if vllm_config.scheduler_config.disable_hybrid_kv_cache_manager:
-        unify_hybrid_kv_cache_specs(kv_cache_spec)
-
-    if is_kv_cache_type_attention_free(kv_cache_spec):
-        # This returns an empty list to allow for the KVCacheManager to handle
-        # attention free models.
+    if not kv_cache_specs:
+        # Attention-free models do not have KV cache.
         return []
 
-    if is_kv_cache_spec_uniform(kv_cache_spec):
+    if vllm_config.scheduler_config.disable_hybrid_kv_cache_manager:
+        kv_cache_specs = unify_hybrid_kv_cache_specs(kv_cache_specs)
+
+    if is_kv_cache_spec_uniform(kv_cache_specs):
         # KV cache of all layers are the same, which is true for
         # most models. Allocate the same amount of memory for
         # each layer.
-        return _get_kv_cache_groups_uniform_spec(kv_cache_spec)
-    elif uniform_spec := UniformTypeKVCacheSpecs.from_specs(kv_cache_spec):
+        return _get_kv_cache_groups_uniform_spec(kv_cache_specs)
+    elif uniform_spec := UniformTypeKVCacheSpecs.from_specs(kv_cache_specs):
         # All layers need the same number of token slots (e.g., all layers are
         # full attention, or all layers are sliding window attention with the
         # same window size). Put all layers into one group.
-        return _get_kv_cache_groups_uniform_type(uniform_spec)
+        return _get_kv_cache_groups_uniform_type(kv_cache_specs, uniform_spec)
 
     # As KVCacheManager can only allocate memory of one size, we need to unify
     # the page size of the layers. For cases cannot be unified, this function
     # will raise an error.
-    kv_cache_spec = unify_kv_cache_spec_page_size(kv_cache_spec)
+    if not is_kv_cache_page_size_uniform(kv_cache_specs):
+        kv_cache_specs = unify_kv_cache_spec_page_size(kv_cache_specs)
+
     # Model contains multiple attention types, but KV cache of all layers
     # have the same physical memory per block per layer. Split the layers
     # into groups with the same number of layers, and thus same total page
     # size.
-    return _get_kv_cache_groups_uniform_page_size(kv_cache_spec)
+    return _get_kv_cache_groups_uniform_page_size(kv_cache_specs)
 
 
 def generate_scheduler_kv_cache_config(
@@ -1343,7 +1303,7 @@ def _max_memory_usage_bytes_from_groups(
 
     # General case: group_size pools, each shared by one layer per group
     # Memory = group_size * page_size * blocks_for_max_len
-    group_size = max(len(group.layer_names) for group in kv_cache_groups)
+    group_size = max(group.num_layers for group in kv_cache_groups)
     page_size = get_uniform_page_size(
         [group.kv_cache_spec for group in kv_cache_groups]
     )
@@ -1453,117 +1413,85 @@ def _auto_fit_max_model_len(
 
 def get_kv_cache_configs(
     vllm_config: VllmConfig,
-    kv_cache_specs: list[dict[str, KVCacheSpec]],
+    kv_cache_specs: list[KVCacheSpec],
     available_memory: list[int],
 ) -> list[KVCacheConfig]:
     """
-    Generates the KV cache configurations for a model.
-    Since we use a shared centralized controller for all workers, we need the
-    `kv_cache_config` to be consistent across all workers to make sure
-    the KV cache allocation can be applied to all workers. However, different
-    workers may have different memory available, and different type of layers
-    (when pipeline parallel is enabled). To handle the difference between
-    workers, the current implementation is:
-    1. Merge the KV cache specs of all workers to get the KVCacheSpecs for
-       the whole model.
-    2. Generate the KV cache groups based on the layer ratio of the whole model.
-       This also handles spec unification for hybrid models.
-    3. Handle auto-fit max_model_len and memory checks using the unified specs.
-    4. Generate the KV cache configs for each worker based on the KV cache
-       grouping strategy. (This is reasonable because the layer ratio of
-       different PP stages are similar.)
-    5. Change the num_blocks of each worker to the smallest among all workers
-       and shrink tensor sizes proportionally to avoid allocating unused memory.
+    Generates the KV cache configurations for a model using index-based specs.
+
+    This function works with specs indexed by global layer index (no layer names).
+    Workers will resolve layer indices to names during initialization.
+
+    The implementation:
+    1. Group specs by type using index-based grouping.
+    2. Create uniform configs for all workers (same indices, same specs).
+    3. Adjust num_blocks to minimum across workers.
 
     Args:
         vllm_config: The global VllmConfig
-        kv_cache_specs: List of dict[layer_name, KVCacheSpec] for each worker.
+        kv_cache_specs: List of KVCacheSpec indexed by global layer index.
         available_memory: Memory available for KV cache in bytes for each
             worker.
 
     Returns:
         The generated KVCacheConfigs for each worker.
     """
+    if not kv_cache_specs:
+        # No KV cache needed (attention-free model)
+        return [
+            KVCacheConfig(
+                num_blocks=0,
+                kv_cache_tensors=[],
+                kv_cache_groups=[],
+            )
+            for _ in available_memory
+        ]
 
-    # Merge the KV cache specs of all workers. Different PP stages may have
-    # different layer names, and different TP ranks of the same PP stage should
-    # have the same KV cache spec.
-    merged_kv_cache_specs: dict[str, KVCacheSpec] = {}
-    for kv_cache_spec_one_worker in kv_cache_specs:
-        for layer_name, layer_spec in kv_cache_spec_one_worker.items():
-            if layer_name not in merged_kv_cache_specs:
-                merged_kv_cache_specs[layer_name] = layer_spec
-            else:
-                assert merged_kv_cache_specs[layer_name] == layer_spec, (
-                    "The KV cache specs for the same layer are different "
-                    "across workers. This is not supported yet."
-                )
+    # Group specs by type directly using indices
+    kv_cache_groups = get_kv_cache_groups(vllm_config, kv_cache_specs)
 
-    # Get global KV cache groups. This also handles spec unification for
-    # hybrid models when disable_hybrid_kv_cache_manager is enabled.
-    # After this call, merged_kv_cache_specs may be modified in-place.
-    global_kv_cache_groups = get_kv_cache_groups(vllm_config, merged_kv_cache_specs)
-
-    # If original_max_model_len was -1, automatically
-    # determine the maximum model length that fits in available GPU memory.
-    # We use the global groups here to correctly account for padding.
+    # If original_max_model_len was -1, automatically determine max model length
     if vllm_config.model_config.original_max_model_len == -1:
-        _auto_fit_max_model_len(vllm_config, global_kv_cache_groups, available_memory)
+        _auto_fit_max_model_len(vllm_config, kv_cache_groups, available_memory)
 
-    # Check if the available memory is enough (using min across all workers).
-    # We use the global groups to correctly account for padding.
-    if global_kv_cache_groups:
+    # Check if the available memory is enough
+    if kv_cache_groups:
         _check_enough_kv_cache_memory(
             min(available_memory),
-            lambda: _max_memory_usage_bytes_from_groups(
-                vllm_config, global_kv_cache_groups
-            ),
+            lambda: _max_memory_usage_bytes_from_groups(vllm_config, kv_cache_groups),
             vllm_config.model_config.max_model_len,
             lambda am: _estimate_max_model_len_from_groups(
-                vllm_config, global_kv_cache_groups, am
+                vllm_config, kv_cache_groups, am
             ),
         )
 
+    # Generate configs for each worker
+    # All workers get the same groups (layer indices), just different memory
     kv_cache_configs: list[KVCacheConfig] = []
-    for kv_cache_spec_one_worker, available_memory_one_worker in zip(
-        kv_cache_specs, available_memory
-    ):
-        kv_cache_groups_one_worker: list[KVCacheGroupSpec] = []
-        for group in global_kv_cache_groups:
-            group_layer_names_one_worker = [
-                layer_name
-                for layer_name in group.layer_names
-                if layer_name in kv_cache_spec_one_worker
-            ]
-            kv_cache_groups_one_worker.append(
-                KVCacheGroupSpec(group_layer_names_one_worker, group.kv_cache_spec)
-            )
-        assert sum(
-            len(group.layer_names) for group in kv_cache_groups_one_worker
-        ) == len(kv_cache_spec_one_worker), "Some layers are not assigned to any group."
-        kv_cache_configs.append(
-            get_kv_cache_config_from_groups(
-                vllm_config, kv_cache_groups_one_worker, available_memory_one_worker
-            )
+    for available_memory_one_worker in available_memory:
+        config = get_kv_cache_config_from_groups(
+            vllm_config, kv_cache_groups, available_memory_one_worker
         )
+        kv_cache_configs.append(config)
 
-    # Change the num_blocks of each rank to the smallest among all ranks.
-    # We also need to shrink the tensor size proportionally to avoid
-    # allocating unused memory.
-    min_num_blocks = min(
-        kv_cache_config.num_blocks for kv_cache_config in kv_cache_configs
-    )
-    for kv_cache_config in kv_cache_configs:
-        num_blocks_old = kv_cache_config.num_blocks
-        kv_cache_config.num_blocks = min_num_blocks
+    # Change the num_blocks of each rank to the smallest among all ranks
+    # Also shrink tensor sizes proportionally
+    if kv_cache_configs:
+        min_num_blocks = min(
+            kv_cache_config.num_blocks for kv_cache_config in kv_cache_configs
+        )
+        for kv_cache_config in kv_cache_configs:
+            num_blocks_old = kv_cache_config.num_blocks
+            if num_blocks_old > 0:
+                kv_cache_config.num_blocks = min_num_blocks
 
-        # Shrink tensor size proportionally
-        for tensor in kv_cache_config.kv_cache_tensors:
-            assert tensor.size % num_blocks_old == 0
-            tensor.size = tensor.size // num_blocks_old * min_num_blocks
+                # Shrink tensor size proportionally
+                for tensor in kv_cache_config.kv_cache_tensors:
+                    assert tensor.size % num_blocks_old == 0
+                    tensor.size = tensor.size // num_blocks_old * min_num_blocks
 
-        if len(kv_cache_config.kv_cache_groups) > 0:
-            _report_kv_cache_config(vllm_config, kv_cache_config)
+            if len(kv_cache_config.kv_cache_groups) > 0:
+                _report_kv_cache_config(vllm_config, kv_cache_config)
 
     return kv_cache_configs
 

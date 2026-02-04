@@ -65,6 +65,10 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import compute_iteration_details
+from vllm.v1.worker.gpu.attn_utils import (
+    get_kv_cache_groups_from_config,
+    get_kv_cache_specs_from_config,
+)
 from vllm.version import __version__ as VLLM_VERSION
 
 logger = init_logger(__name__)
@@ -222,48 +226,129 @@ class EngineCore:
     ) -> tuple[int, int, KVCacheConfig]:
         start = time.time()
 
-        # Get all kv cache needed by the model
-        kv_cache_specs = self.model_executor.get_kv_cache_specs()
+        # Get KV cache specs from config (no RPC needed)
+        kv_cache_specs = get_kv_cache_specs_from_config(vllm_config)
 
-        has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
-        if has_kv_cache:
-            if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
-                dp_group = getattr(self, "dp_group", None)
-                assert dp_group is not None
-                self.available_gpu_memory_for_kv_cache = (
-                    ParallelConfig.sync_kv_cache_memory_size(dp_group, -1)
-                )
-                available_gpu_memory = [self.available_gpu_memory_for_kv_cache] * len(
-                    kv_cache_specs
-                )
-            else:
-                # Profiles the peak memory usage of the model to determine how
-                # much memory can be allocated for kv cache.
-                available_gpu_memory = self.model_executor.determine_available_memory()
-                self.available_gpu_memory_for_kv_cache = available_gpu_memory[0]
-        else:
-            # Attention free models don't need memory for kv cache
-            available_gpu_memory = [0] * len(kv_cache_specs)
+        num_workers = self.model_executor.parallel_config.world_size
+        has_kv_cache = bool(kv_cache_specs)
 
-        assert len(kv_cache_specs) == len(available_gpu_memory)
+        # Elastic EP scale-up is a special case: workers receive pre-determined
+        # memory from existing workers instead of profiling
+        is_elastic_ep = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+        if has_kv_cache and is_elastic_ep:
+            return self._initialize_kv_caches_elastic_ep(
+                vllm_config, kv_cache_specs, num_workers
+            )
 
-        # Track max_model_len before KV cache config to detect auto-fit changes
-        max_model_len_before = vllm_config.model_config.max_model_len
+        # Unified flow: single RPC for profile + init
+        # Get KV cache groups from config (no RPC needed)
+        kv_cache_groups = get_kv_cache_groups_from_config(vllm_config)
 
-        kv_cache_configs = get_kv_cache_configs(
-            vllm_config, kv_cache_specs, available_gpu_memory
+        if not kv_cache_groups:
+            # Attention-free models - still need profiling for compilation
+            self.model_executor.profile_and_init_kv_cache([])
+            scheduler_kv_cache_config = KVCacheConfig(
+                num_blocks=0,
+                kv_cache_tensors=[],
+                kv_cache_groups=[],
+            )
+            elapsed = time.time() - start
+            logger.info_once(
+                "init engine (profile, create kv cache, warmup model) "
+                "took %.2f seconds",
+                elapsed,
+                scope="local",
+            )
+            return 0, 0, scheduler_kv_cache_config
+
+        # Single RPC: workers profile memory, compute num_blocks, init KV cache
+        # Workers return (num_blocks, available_memory) for each worker
+        num_blocks_per_worker, available_memory_per_worker, min_num_blocks = (
+            self.model_executor.profile_and_init_kv_cache(kv_cache_groups)
         )
 
-        # If auto-fit reduced max_model_len, sync the new value to workers.
-        # This is needed because workers were spawned before memory profiling
-        # and have the original (larger) max_model_len cached.
+        # Store available memory for reference (e.g., elastic EP scale-up later)
+        if available_memory_per_worker:
+            self.available_gpu_memory_for_kv_cache = available_memory_per_worker[0]
+
+        # Handle auto-fit max_model_len if needed
+        # Auto-fit can be done AFTER workers init because num_blocks is
+        # independent of max_model_len
+        if vllm_config.model_config.original_max_model_len == -1:
+            self._handle_auto_fit_max_model_len(
+                vllm_config, kv_cache_groups, available_memory_per_worker
+            )
+
+        # Build scheduler config from groups + min_num_blocks
+        scheduler_kv_cache_config = KVCacheConfig(
+            num_blocks=min_num_blocks,
+            kv_cache_tensors=[],  # Scheduler doesn't need tensor info
+            kv_cache_groups=kv_cache_groups,
+        )
+
+        elapsed = time.time() - start
+        logger.info_once(
+            "init engine (profile, create kv cache, warmup model) took %.2f seconds",
+            elapsed,
+            scope="local",
+        )
+        return min_num_blocks, 0, scheduler_kv_cache_config
+
+    def _handle_auto_fit_max_model_len(
+        self,
+        vllm_config: VllmConfig,
+        kv_cache_groups: list,
+        available_memory_per_worker: list[int],
+    ) -> None:
+        """Handle auto-fit max_model_len after workers have initialized.
+
+        When original_max_model_len == -1, we compute the maximum context
+        length that fits in available memory and sync it to workers.
+        """
+        from vllm.v1.core.kv_cache_utils import (
+            _auto_fit_max_model_len,
+        )
+
+        max_model_len_before = vllm_config.model_config.max_model_len
+
+        # Use the auto-fit logic with actual available memory from workers
+        _auto_fit_max_model_len(
+            vllm_config, kv_cache_groups, available_memory_per_worker
+        )
+
+        # If auto-fit reduced max_model_len, sync the new value to workers
         max_model_len_after = vllm_config.model_config.max_model_len
         if max_model_len_after != max_model_len_before:
             self.collective_rpc("update_max_model_len", args=(max_model_len_after,))
 
+    def _initialize_kv_caches_elastic_ep(
+        self,
+        vllm_config: VllmConfig,
+        kv_cache_specs: list,
+        num_workers: int,
+    ) -> tuple[int, int, KVCacheConfig]:
+        """Initialization flow for elastic EP scale-up.
+
+        In elastic EP, new workers receive pre-determined memory size from
+        existing workers instead of profiling. This requires the legacy flow
+        where memory is passed TO workers rather than profiled BY workers.
+        """
+        start = time.time()
+
+        dp_group = getattr(self, "dp_group", None)
+        assert dp_group is not None
+        self.available_gpu_memory_for_kv_cache = (
+            ParallelConfig.sync_kv_cache_memory_size(dp_group, -1)
+        )
+        available_gpu_memory = [self.available_gpu_memory_for_kv_cache] * num_workers
+
+        # Generate KV cache configs using layer indices
+        kv_cache_configs = get_kv_cache_configs(
+            vllm_config, kv_cache_specs, available_gpu_memory
+        )
+
         scheduler_kv_cache_config = generate_scheduler_kv_cache_config(kv_cache_configs)
         num_gpu_blocks = scheduler_kv_cache_config.num_blocks
-        num_cpu_blocks = 0
 
         # Initialize kv cache and warmup the execution
         self.model_executor.initialize_from_config(kv_cache_configs)
@@ -274,7 +359,7 @@ class EngineCore:
             elapsed,
             scope="local",
         )
-        return num_gpu_blocks, num_cpu_blocks, scheduler_kv_cache_config
+        return num_gpu_blocks, 0, scheduler_kv_cache_config
 
     def get_supported_tasks(self) -> tuple[SupportedTask, ...]:
         return self.model_executor.supported_tasks

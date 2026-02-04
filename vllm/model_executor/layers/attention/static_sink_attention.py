@@ -5,16 +5,19 @@ import functools
 import torch
 
 from vllm.attention.layer import Attention
-from vllm.config import CacheConfig, VllmConfig
+from vllm.config import CacheConfig, ParallelConfig, VllmConfig
+from vllm.config.model_arch import KVCacheModelConfig
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
 from vllm.utils.math_utils import cdiv
-from vllm.utils.torch_utils import direct_register_custom_op
+from vllm.utils.torch_utils import (
+    direct_register_custom_op,
+    resolve_kv_cache_dtype,
+)
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionMetadata,
-    AttentionType,
     CommonAttentionMetadata,
     subclass_attention_backend,
 )
@@ -210,19 +213,26 @@ class StaticSinkAttention(Attention, CustomOp):
         # We only populate the sink_key and sink_value once
         self.sink_populated = True
 
-    def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
-        # Block size may get updated after model loading, refresh it
-        block_size = vllm_config.cache_config.block_size
-        # Should not be called for enc-dec or encoder-only attention.
-        assert self.attn_type == AttentionType.DECODER
+    @classmethod
+    def get_kv_cache_spec(
+        cls,
+        kv_cache_config: KVCacheModelConfig,
+        cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
+        model_dtype: torch.dtype,
+        layer_type: str,
+    ) -> KVCacheSpec:
+        kv_dtype = resolve_kv_cache_dtype(cache_config.cache_dtype, model_dtype)
+        tp_size = parallel_config.tensor_parallel_size
+        num_kv_heads = kv_cache_config.get_num_kv_heads_per_tp(tp_size)
 
         return SinkFullAttentionSpec(
-            block_size=block_size,
-            num_kv_heads=self.num_kv_heads,
-            head_size=self.head_size,
-            head_size_v=self.head_size_v,
-            sink_len=self.sink_len,
-            dtype=self.kv_cache_torch_dtype,
+            block_size=cache_config.block_size,
+            num_kv_heads=num_kv_heads,
+            head_size=kv_cache_config.head_size,
+            head_size_v=kv_cache_config.head_size_v,
+            sink_len=kv_cache_config.sink_len,
+            dtype=kv_dtype,
         )
 
 

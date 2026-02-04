@@ -14,7 +14,6 @@ from vllm.lora.request import LoRARequest
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.system_utils import update_environment_variables
-from vllm.v1.kv_cache_interface import KVCacheSpec
 from vllm.v1.serial_utils import run_method
 
 if TYPE_CHECKING:
@@ -82,10 +81,6 @@ class WorkerBase:
         # Device and model state
         self.device: torch.device | None = None
         self.model_runner: nn.Module | None = None
-
-    def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
-        """Get specifications for KV cache implementation."""
-        raise NotImplementedError
 
     def compile_or_warm_up_model(self) -> None:
         """Prepare model for execution through compilation/warmup."""
