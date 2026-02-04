@@ -494,6 +494,66 @@ class Worker(WorkerBase):
             kv_cache_groups=new_groups,
         )
 
+    @torch.inference_mode()
+    def profile_and_init_kv_cache(
+        self,
+        kv_cache_groups: list,
+    ) -> tuple[int, int]:
+        """Profile memory and initialize KV cache in a single call.
+
+        This method combines memory profiling and KV cache initialization,
+        reducing the number of RPC calls needed during engine startup.
+
+        According to TL's design:
+        1. Profile available memory
+        2. Compute num_blocks locally based on this worker's available memory
+        3. Resolve layer names from static_forward_context
+        4. Allocate and bind KV cache tensors
+        5. Return num_blocks and available_memory for this worker
+
+        Args:
+            kv_cache_groups: List of KVCacheGroupSpec from engine
+                (with num_layers set, worker_layer_names=None)
+
+        Returns:
+            Tuple of (num_blocks, available_memory) for this worker.
+            Engine uses available_memory for auto-fit max_model_len calculation.
+        """
+        from vllm.v1.core.kv_cache_utils import get_kv_cache_config_from_groups
+        from vllm.v1.kv_cache_interface import KVCacheGroupSpec
+
+        # Convert list back to proper type if needed (for RPC serialization)
+        if kv_cache_groups and not isinstance(kv_cache_groups[0], KVCacheGroupSpec):
+            # Reconstruct from serialized data
+            kv_cache_groups = [
+                KVCacheGroupSpec(
+                    kv_cache_spec=g.kv_cache_spec,
+                    num_layers=g.num_layers,
+                    worker_layer_names=g.worker_layer_names,
+                )
+                for g in kv_cache_groups
+            ]
+
+        # Handle attention-free models (no KV cache needed)
+        if not kv_cache_groups:
+            # Still need to run profiling for model compilation
+            self.model_runner.profile_run()
+            return 0, 0
+
+        # Step 1: Profile available memory (reuse existing logic)
+        available_memory = self.determine_available_memory()
+
+        # Step 2: Compute num_blocks and create config locally
+        kv_cache_config = get_kv_cache_config_from_groups(
+            self.vllm_config, kv_cache_groups, available_memory
+        )
+
+        # Step 3: Resolve layer names and initialize KV cache
+        # (reuse existing initialize_from_config logic)
+        self.initialize_from_config(kv_cache_config)
+
+        return kv_cache_config.num_blocks, available_memory
+
     def compile_or_warm_up_model(self) -> None:
         warmup_sizes = []
 
